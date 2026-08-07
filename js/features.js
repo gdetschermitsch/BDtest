@@ -55,6 +55,24 @@ export class FeatureTracker{
    this.points=next;this.prev.set(this.curr);
    return{detected:next.length,tracks,motionPx,newFrame:true,seeded}
  }
+
+ descriptor(x,y){
+   const vals=[],w=this.w,h=this.h;
+   // 8x8 descriptor from a 16x16 patch; normalized removes brightness/contrast offsets.
+   for(let gy=-7;gy<=7;gy+=2)for(let gx=-7;gx<=7;gx+=2){
+     const X=Math.max(0,Math.min(w-1,Math.round(x+gx))),Y=Math.max(0,Math.min(h-1,Math.round(y+gy)));
+     vals.push(this.curr[Y*w+X]/255);
+   }
+   const mean=vals.reduce((s,v)=>s+v,0)/vals.length;
+   let n=0;for(let i=0;i<vals.length;i++){vals[i]-=mean;n+=vals[i]*vals[i]}
+   n=Math.sqrt(n)||1;return vals.map(v=>v/n)
+ }
+ observations(max=260){
+   return [...this.points].sort((a,b)=>(b.age||1)-(a.age||1)).slice(0,max).map(p=>({
+     id:p.id,x:p.x,y:p.y,age:p.age||1,desc:this.descriptor(p.x,p.y)
+   }))
+ }
+
  telemetry(tracks,max=100){
    // Long-lived tracks first, capped to keep the export small.
    return [...tracks].sort((a,b)=>b.age-a.age).slice(0,max).map(q=>({
