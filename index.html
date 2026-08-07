@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
   <meta name="theme-color" content="#050608" />
-  <title>CRUXTAIN Definitive XYZ v2.5 Anchored VIO</title>
+  <title>CRUXTAIN Definitive XYZ v2.5 World-Lock Qualification</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -25,7 +25,7 @@
       </div>
       <div id="startCard">
         <h1>Definitive XYZ</h1>
-        <p>Creates a local world at <strong>0,0,0</strong>, synchronizes a virtual grid to the live camera, then tracks one authoritative phone pose.</p>
+        <p>Creates a local metric world at <strong>0,0,0</strong>, calibrates the visible camera, then locks phone pose to persistent visual landmarks so walking does not rely on dead-reckoning alone.</p>
         <button id="startBtn">Allow Camera + Motion</button>
         <small>Requires HTTPS. GitHub Pages provides HTTPS.</small>
       </div>
@@ -66,6 +66,8 @@
         <span>Stationary lock</span><b id="dStill">off</b>
         <span>Processing rate</span><b id="dFps">0</b>
         <span>Reliable feature tracks</span><b id="dTracks">0</b>
+        <span>Persistent world map</span><b id="dMap">not built</b>
+        <span>Full-pose residual</span><b id="dPoseResidual">—</b>
         <span>Stationary drift</span><b id="dDrift">0</b>
         <span>Motion sample rate</span><b id="dImuHz">0</b>
         <span>Video frame rate</span><b id="dVideoHz">0</b>
@@ -77,11 +79,8 @@
         <span>Grid mode</span><b id="dGridMode">off</b>
         <span>Visual translation step</span><b id="dVisualStep">0.00000</b>
         <span>Movement gate</span><b id="dMoveGate">still</b>
-        <span>Camera ↔ IMU sync</span><b id="dSync">—</b>
-        <span>Visual anchor</span><b id="dAnchor">0%</b>
-        <span>Keyframes</span><b id="dKeyframes">0</b>
       </div>
-      <p class="warning">“Locked” now requires synchronized camera/IMU timing, robust multi-point tracking, anchored visual translation, metric scale evidence, and a stationary zero-velocity drift check. Browser data remains an estimate rather than external motion-capture ground truth.</p>
+      <p class="warning">“Locked” requires projection evidence, a measured 12 in / 30.48 cm visual baseline, persistent 3D landmarks, full-pose reprojection, and a stationary no-creep check. Browser tracking is still not external motion-capture ground truth.</p>
       <button id="exportBtn">Export Basis JSON</button>
     </dialog>
   </main>
