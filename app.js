@@ -15,10 +15,10 @@ const ui = {
   dState: $('#dState'), dFov: $('#dFov'), dVisual: $('#dVisual'), dMotion: $('#dMotion'), dStill: $('#dStill'),
   dFps: $('#dFps'), dScale: $('#dScale'), dQuality: $('#dQuality'), dTracks: $('#dTracks'), dDrift: $('#dDrift'),
   dImuHz: $('#dImuHz'), dVideoHz: $('#dVideoHz'), dReason: $('#dReason'), dProjectionError: $('#dProjectionError'),
-  dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
+  dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
 };
 
-const STORAGE_KEY = 'cruxtain.xyzBasis.v2.2';
+const STORAGE_KEY = 'cruxtain.xyzBasis.v2.3';
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -96,10 +96,11 @@ function qAverage(samples) {
   }
   return qNorm(q(x,y,z,w));
 }
-function relativeCameraQ() {
+function relativeQ(absQ) {
   if (!state.baseQ) return q();
-  return qNorm(qMul(qInv(state.baseQ), state.orientationQ));
+  return qNorm(qMul(qInv(state.baseQ), absQ));
 }
+function relativeCameraQ() { return relativeQ(state.orientationQ); }
 
 const state = {
   stage: 'idle', stream: null, trackSettings: {},
@@ -114,7 +115,7 @@ const state = {
   imuCount: 0, imuHz: 0, imuStamp: performance.now(), videoCount: 0, videoHz: 0, videoStamp: performance.now(),
   processedFps: 0, processCount: 0, processStamp: performance.now(),
   frame: null, previousFrame: null, tracks: [], validTracks: 0, flowMagnitude: 0,
-  translationSignal: {x:0,y:0,z:0,confidence:0}, driftRate: 0, lastPositionForDrift: {x:0,y:0,z:0},
+  translationSignal: {x:0,y:0,z:0,confidence:0,rawMagnitude:0}, visualStepMagnitude:0, movementGate:'still', lastMoveAt:0, driftRate: 0, lastPositionForDrift: {x:0,y:0,z:0},
   poseReason: 'Not started', loopStarted: false, lastProcessAt: 0, basisSaved: false, stageEnteredAt: performance.now(),
   calib: { visualPath:0, inertialPath:0, inertialVelocity:{x:0,y:0,z:0}, lastPosition:{x:0,y:0,z:0}, motionSeen:false },
   gridMode: 'off', worldRevision: 0
@@ -201,7 +202,8 @@ function onOrientation(e) {
 function onMotion(e) {
   const now=performance.now();
   const rr=e.rotationRate||{};
-  state.gyro={x:(rr.beta||0)*DEG,y:(rr.gamma||0)*DEG,z:(rr.alpha||0)*DEG};
+  // Current Device Motion spec: alpha/beta/gamma are rates about device X/Y/Z.
+  state.gyro={x:(rr.alpha||0)*DEG,y:(rr.beta||0)*DEG,z:(rr.gamma||0)*DEG};
   const a=e.acceleration||{};
   const hasLinear=[a.x,a.y,a.z].every(Number.isFinite);
   if(hasLinear){
@@ -332,9 +334,14 @@ function trackPoint(prev,curr,w,h,p,search=12) {
   const uniqueness=clamp((second-best.score)/(second+1e-6),0,1);
   return {...best,fb,confidence:clamp(uniqueness*2.7,0,1)*clamp((2200-best.score)/1900,0,1)};
 }
-function predictedRotFlow(p,rv,fx,fy,cx,cy) {
-  const x=(p.x-cx)/fx,y=(p.y-cy)/fy,wx=rv.x,wy=-rv.y,wz=-rv.z;
-  return {x:fx*(x*y*wx-(1+x*x)*wy+y*wz),y:fy*((1+y*y)*wx-x*y*wy-x*wz)};
+function predictedRotatedPixel(p,prevQ,currQ,fx,fy,cx,cy) {
+  // Exact ray rotation rather than a small-angle optical-flow approximation.
+  // This removes axis-sign assumptions and remains valid through full 360° turns.
+  const rayPrev={x:(p.x-cx)/fx,y:-(p.y-cy)/fy,z:-1};
+  const worldRay=qRotate(prevQ,rayPrev);
+  const rayCurr=qRotate(qInv(currQ),worldRay);
+  if(rayCurr.z>=-1e-5)return null;
+  return {x:cx+fx*(rayCurr.x/-rayCurr.z),y:cy-fy*(rayCurr.y/-rayCurr.z)};
 }
 function qualityTracks(prevFrame,currFrame) {
   const {w,h}=currFrame,corners=selectCorners(prevFrame,95),raw=[];
@@ -347,29 +354,34 @@ function qualityTracks(prevFrame,currFrame) {
 }
 function residualSolution(raw,prevQ,currQ,w,h,hfov=state.fovX) {
   const fx=0.5*w/Math.tan(hfov*DEG/2),vfov=2*Math.atan(Math.tan(hfov*DEG/2)*(h/w))/DEG,fy=0.5*h/Math.tan(vfov*DEG/2),cx=w/2,cy=h/2;
-  const rv=qDeltaVector(prevQ,currQ),tracks=raw.map(t=>{
-    const rot=predictedRotFlow(t.p,rv,fx,fy,cx,cy);
-    return {...t,rot,residual:{x:t.observed.x-rot.x,y:t.observed.y-rot.y}};
-  });
-  if(tracks.length<6)return {raw,tracks,inliers:[],confidence:0,rv,fx,fy};
+  const tracks=[];
+  for(const t of raw){
+    const predicted=predictedRotatedPixel(t.p,prevQ,currQ,fx,fy,cx,cy);
+    if(!predicted)continue;
+    const rot={x:predicted.x-t.p.x,y:predicted.y-t.p.y};
+    tracks.push({...t,rot,residual:{x:t.observed.x-rot.x,y:t.observed.y-rot.y}});
+  }
+  if(tracks.length<6)return {raw,tracks,inliers:[],confidence:0,fx,fy};
   const rx=tracks.map(t=>t.residual.x),ry=tracks.map(t=>t.residual.y),mx=median(rx),my=median(ry),sx=mad(rx,mx),sy=mad(ry,my);
-  const inliers=tracks.filter(t=>Math.abs(t.residual.x-mx)<Math.max(2.2,3.8*sx)&&Math.abs(t.residual.y-my)<Math.max(2.2,3.8*sy));
-  const confidence=clamp(inliers.length/32,0,1)*clamp(inliers.length/Math.max(1,tracks.length),0,1);
-  return {raw,tracks,inliers,confidence,rv,fx,fy};
+  const inliers=tracks.filter(t=>Math.abs(t.residual.x-mx)<Math.max(1.7,3.4*sx)&&Math.abs(t.residual.y-my)<Math.max(1.7,3.4*sy));
+  const confidence=clamp(inliers.length/28,0,1)*clamp(inliers.length/Math.max(1,tracks.length),0,1);
+  return {raw,tracks,inliers,confidence,fx,fy};
 }
 
 function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
-  const rv=qDeltaVector(prevQ,currQ),rotation=vecLength(rv),acc=vecLength(correctedAcceleration());
-  if(raw.length<12||rotation<0.004||rotation>0.11||acc>1.4)return;
+  const rotation=qAngle(prevQ,currQ),acc=vecLength(correctedAcceleration());
+  if(raw.length<12||rotation<0.003||rotation>0.14||acc>1.6)return;
   let best=null;
-  for(let hfov=34;hfov<=100;hfov+=1){
+  for(let hfov=34;hfov<=105;hfov+=1){
     const fx=0.5*w/Math.tan(hfov*DEG/2),vfov=2*Math.atan(Math.tan(hfov*DEG/2)*(h/w))/DEG,fy=0.5*h/Math.tan(vfov*DEG/2),cx=w/2,cy=h/2;
     const errors=[];
     for(const t of raw){
-      const p=predictedRotFlow(t.p,rv,fx,fy,cx,cy);
-      errors.push(Math.hypot(t.observed.x-p.x,t.observed.y-p.y));
+      const pp=predictedRotatedPixel(t.p,prevQ,currQ,fx,fy,cx,cy);
+      if(!pp)continue;
+      errors.push(Math.hypot(t.q.x-pp.x,t.q.y-pp.y));
     }
-    const m=median(errors),trim=errors.filter(e=>e<Math.max(2.5,m+2.5*mad(errors,m)));
+    if(errors.length<10)continue;
+    const m=median(errors),spread=mad(errors,m),trim=errors.filter(e=>e<Math.max(2.3,m+2.6*spread));
     const score=median(trim);
     if(!best||score<best.score)best={hfov,score,count:trim.length};
   }
@@ -378,7 +390,7 @@ function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
   if(state.fovSamples.length>70)state.fovSamples.shift();
   if(state.fovSamples.length>=7){
     const recent=state.fovSamples.slice(-40),values=recent.map(s=>s.fov),m=median(values),spread=mad(values,m),error=median(recent.map(s=>s.error));
-    state.fovX=clamp(lerp(state.fovX,m,0.20),34,100);
+    state.fovX=clamp(lerp(state.fovX,m,0.20),34,105);
     state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w))/DEG;
     state.projectionError=error;
     state.focalConfidence=clamp(recent.length/24,0,1)*clamp(1-spread/7,0,1)*clamp(1-error/6,0,1);
@@ -386,23 +398,29 @@ function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
 }
 
 function correctedAcceleration() { return state.accelWorld; }
-function estimateTranslation(solution,w,h,dt) {
+function estimateTranslation(solution,w,h,dt,frameQ) {
   if(solution.inliers.length<8||dt<=0)return {x:0,y:0,z:0,confidence:0,rawMagnitude:0};
   const {fx,fy}=solution,cx=w/2,cy=h/2;
+  // Residual flow after exact rotation compensation.  The result is an
+  // arbitrary-scale camera displacement for THIS frame, not a damped velocity.
   const lateralX=median(solution.inliers.map(t=>-t.residual.x/fx));
-  const lateralY=median(solution.inliers.map(t=>t.residual.y/fy));
+  const lateralY=median(solution.inliers.map(t=> t.residual.y/fy));
   const zSamples=[];
   for(const t of solution.inliers){
-    const nx=(t.p.x-cx)/fx,ny=(t.p.y-cy)/fy,denom=nx*nx+ny*ny;
-    if(denom<0.012)continue;
-    const ux=t.residual.x/fx+lateralX,uy=t.residual.y/fy-lateralY;
+    const nx=(t.p.x-cx)/fx,ny=-(t.p.y-cy)/fy,denom=nx*nx+ny*ny;
+    if(denom<0.010)continue;
+    const ux=t.residual.x/fx+lateralX;
+    const uy=-t.residual.y/fy+lateralY;
     zSamples.push((ux*nx+uy*ny)/denom);
   }
-  const radial=median(zSamples);
-  const localPerSecond={x:lateralX/dt,y:lateralY/dt,z:-radial/dt};
-  const worldPerSecond=qRotate(relativeCameraQ(),localPerSecond);
-  const rawMagnitude=vecLength(worldPerSecond);
-  return {...worldPerSecond,confidence:solution.confidence,rawMagnitude};
+  const radial=zSamples.length?median(zSamples):0;
+  const localDelta={x:lateralX,y:lateralY,z:-radial};
+  const worldDelta=qRotate(relativeQ(frameQ),localDelta);
+  const rawMagnitude=vecLength(worldDelta);
+  const spreadX=mad(solution.inliers.map(t=>t.residual.x));
+  const spreadY=mad(solution.inliers.map(t=>t.residual.y));
+  const geometric=clamp(1-(spreadX+spreadY)/(Math.max(w,h)*0.055),0.25,1);
+  return {...worldDelta,confidence:solution.confidence*geometric,rawMagnitude};
 }
 
 function updateScaleCalibration(rawVisualVelocity,dt) {
@@ -413,7 +431,7 @@ function updateScaleCalibration(rawVisualVelocity,dt) {
   state.calib.inertialVelocity.y+=a.y*dt;
   state.calib.inertialVelocity.z+=a.z*dt;
   const inertialSpeed=vecLength(state.calib.inertialVelocity);
-  const visualStep=rawVisualVelocity.rawMagnitude*dt;
+  const visualStep=rawVisualVelocity.rawMagnitude;
   const inertialStep=inertialSpeed*dt;
   if(visualStep<0.20)state.calib.visualPath+=visualStep;
   if(inertialStep<0.10)state.calib.inertialPath+=inertialStep;
@@ -429,48 +447,65 @@ function updateScaleCalibration(rawVisualVelocity,dt) {
     state.scaleStability=clamp(state.scaleSamples.length/18,0,1)*clamp(1-spread/(m*0.75+1e-3),0,1);
   } else if(state.calib.visualPath>0.04){
     // Arbitrary scale is allowed. This deterministic fallback remains fixed and never breathes.
-    const fallback=2.8;
+    const fallback=3.2;
     state.scale=lerp(state.scale,fallback,0.035);
     state.scaleStability=clamp(state.calib.visualPath/0.16,0,0.55);
   }
 }
 
-function updatePose(rawVisualVelocity,dt,now) {
-  const a=correctedAcceleration(),gyroMag=vecLength(state.gyro),accMag=vecLength(a),visualSpeed=rawVisualVelocity.rawMagnitude||vecLength(rawVisualVelocity);
+function updatePose(rawVisualDelta,dt,now) {
+  const a=correctedAcceleration(),gyroMag=vecLength(state.gyro),accMag=vecLength(a);
+  const visualSpeed=(rawVisualDelta.rawMagnitude||0)/Math.max(dt,1e-3);
   const motionFresh=now-state.lastMotionAt<350;
-  const visualStillScore=state.validTracks>=6?1-clamp((visualSpeed-0.015)/0.16,0,1):0.52;
-  const angularStillScore=1-clamp((Math.max(gyroMag,state.orientationRate)-0.025)/0.32,0,1);
-  const accelStillScore=1-clamp((accMag-0.08)/1.05,0,1);
-  const stationaryQuality=(motionFresh||now-state.lastOrientationAt<350)?(0.47*visualStillScore+0.31*angularStillScore+0.22*accelStillScore):0;
-  state.stationaryScore=clamp(state.stationaryScore+dt*(stationaryQuality>0.48?stationaryQuality*1.65:-0.42),0,1);
-  state.stationary=state.stationaryScore>0.56;
+  state.visualStepMagnitude=lerp(state.visualStepMagnitude,rawVisualDelta.rawMagnitude||0,0.28);
+
+  // Hard release: once deliberate translation is observed, the old stillness
+  // latch cannot suppress the beginning of the user's movement.
+  const deliberateVisual=rawVisualDelta.confidence>0.11&&visualSpeed>0.028;
+  const deliberateInertial=motionFresh&&accMag>0.30;
+  const deliberate=deliberateVisual||deliberateInertial;
+  if(deliberate){
+    state.stationaryScore=Math.min(state.stationaryScore,0.12);
+    state.stationary=false;state.stillSince=0;state.lastMoveAt=now;state.movementGate='MOVING';
+  } else {
+    const visualStillScore=state.validTracks>=6?1-clamp((visualSpeed-0.010)/0.12,0,1):0.52;
+    const angularStillScore=1-clamp((Math.max(gyroMag,state.orientationRate)-0.020)/0.28,0,1);
+    const accelStillScore=1-clamp((accMag-0.06)/0.85,0,1);
+    const stationaryQuality=(motionFresh||now-state.lastOrientationAt<350)?(0.50*visualStillScore+0.28*angularStillScore+0.22*accelStillScore):0;
+    state.stationaryScore=clamp(state.stationaryScore+dt*(stationaryQuality>0.55?stationaryQuality*1.8:-1.7),0,1);
+    state.stationary=state.stationaryScore>0.58;
+    state.movementGate=state.stationary?'STILL':'FREE';
+  }
 
   if(state.stationary){
     if(!state.stillSince)state.stillSince=now;
-    state.velocity.x*=0.12;state.velocity.y*=0.12;state.velocity.z*=0.12;
-    if(vecLength(state.velocity)<0.015)state.velocity={x:0,y:0,z:0};
+    state.velocity={x:0,y:0,z:0};
   } else state.stillSince=0;
 
-  updateScaleCalibration(rawVisualVelocity,dt);
-  const scaledVisual={x:rawVisualVelocity.x*state.scale,y:rawVisualVelocity.y*state.scale,z:rawVisualVelocity.z*state.scale};
-  const inertialWeight=motionFresh?0.055:0,visualWeight=clamp(state.visualConfidence*0.60,0,0.60);
-  state.velocity.x+=a.x*dt*inertialWeight;state.velocity.y+=a.y*dt*inertialWeight;state.velocity.z+=a.z*dt*inertialWeight;
-  if(rawVisualVelocity.confidence>0){
-    state.velocity.x=lerp(state.velocity.x,scaledVisual.x,visualWeight);
-    state.velocity.y=lerp(state.velocity.y,scaledVisual.y,visualWeight);
-    state.velocity.z=lerp(state.velocity.z,scaledVisual.z,visualWeight);
+  updateScaleCalibration(rawVisualDelta,dt);
+  const active=(state.stage==='xyz_lock'||state.stage==='settle_check'||state.stage==='locked'||state.stage==='revalidating');
+  if(active&&!state.stationary){
+    if(rawVisualDelta.confidence>0.08&&rawVisualDelta.rawMagnitude>0.00015){
+      const gain=clamp(0.78+0.22*rawVisualDelta.confidence,0.78,1);
+      const dx=rawVisualDelta.x*state.scale*gain,dy=rawVisualDelta.y*state.scale*gain,dz=rawVisualDelta.z*state.scale*gain;
+      state.position.x+=dx;state.position.y+=dy;state.position.z+=dz;
+      const measured={x:dx/dt,y:dy/dt,z:dz/dt};
+      state.velocity.x=lerp(state.velocity.x,measured.x,0.62);
+      state.velocity.y=lerp(state.velocity.y,measured.y,0.62);
+      state.velocity.z=lerp(state.velocity.z,measured.z,0.62);
+    } else if(motionFresh&&now-state.lastMoveAt<180){
+      // Very short inertial bridge only; never let acceleration free-run into drift.
+      state.velocity.x+=a.x*dt*0.14;state.velocity.y+=a.y*dt*0.14;state.velocity.z+=a.z*dt*0.14;
+      state.position.x+=state.velocity.x*dt;state.position.y+=state.velocity.y*dt;state.position.z+=state.velocity.z*dt;
+    }
   }
-  const maxSpeed=4.0,speed=vecLength(state.velocity);
+
+  const maxSpeed=5.0,speed=vecLength(state.velocity);
   if(speed>maxSpeed){const k=maxSpeed/speed;state.velocity.x*=k;state.velocity.y*=k;state.velocity.z*=k;}
-  const damping=state.stationary?0.1:clamp(0.991-(1-state.visualConfidence)*0.012,0.968,0.994);
-  state.velocity.x*=damping;state.velocity.y*=damping;state.velocity.z*=damping;
+  if(!deliberate&&!state.stationary){state.velocity.x*=0.88;state.velocity.y*=0.88;state.velocity.z*=0.88;}
 
-  if((state.stage==='xyz_lock'||state.stage==='settle_check'||state.stage==='locked'||state.stage==='revalidating')&&!state.stationary){
-    state.position.x+=state.velocity.x*dt;state.position.y+=state.velocity.y*dt;state.position.z+=state.velocity.z*dt;
-  }
-
-  const sourceAgreement=clamp(1-Math.abs(visualSpeed-accMag*0.08)/(visualSpeed+0.25),0,1);
-  state.motionConfidence=clamp(0.52*state.visualConfidence+0.18*(motionFresh?1:0.6)+0.18*sourceAgreement+0.12*(state.stationary?1:0.75),0,1);
+  const sourceAgreement=clamp(1-Math.abs(visualSpeed-accMag*0.10)/(visualSpeed+0.30),0,1);
+  state.motionConfidence=clamp(0.56*state.visualConfidence+0.16*(motionFresh?1:0.55)+0.18*sourceAgreement+0.10*(state.stationary?1:0.8),0,1);
   const p=state.position,lp=state.lastPositionForDrift;
   if(state.stationary){const drift=Math.hypot(p.x-lp.x,p.y-lp.y,p.z-lp.z)/Math.max(dt,1e-3);state.driftRate=lerp(state.driftRate,drift,0.10);}else state.driftRate*=0.96;
   state.lastPositionForDrift={...p};
@@ -487,7 +522,7 @@ function processVideoFrame(now) {
     if(state.stage==='fov_sync')estimateFovFromTracks(raw,state.previousFrameQ,frameQ,frame.w,frame.h);
     const solution=residualSolution(raw,state.previousFrameQ,frameQ,frame.w,frame.h,state.fovX);
     state.tracks=solution.inliers;state.validTracks=solution.inliers.length;state.visualConfidence=lerp(state.visualConfidence,solution.confidence,0.26);
-    const vv=estimateTranslation(solution,frame.w,frame.h,dt);state.translationSignal=vv;updatePose(vv,dt,now);
+    const vv=estimateTranslation(solution,frame.w,frame.h,dt,frameQ);state.translationSignal=vv;updatePose(vv,dt,now);
   }
   state.previousFrame=frame;state.previousFrameQ=frameQ;state.frame=frame;
   state.processCount++;
@@ -538,7 +573,7 @@ function updateSetupGuidance(now,originQuality=0) {
     ui.stepDetail.textContent=state.stationary?'Position is frozen while stationary—keep holding.':'Stop naturally; final drift verification begins automatically.';
   } else if(state.stage==='locked'){
     ui.stepTimer.textContent='TEST';
-    ui.stepDetail.textContent='Full 3D lattice is active. Walk, lean, turn, and return before choosing Save Basis.';
+    ui.stepDetail.textContent='360° lattice is active. Walk/lean now: XYZ should change immediately; turn completely around and the lattice must still exist.';
   }
 }
 
@@ -575,7 +610,7 @@ function setupMachine(now) {
     updateSetupGuidance(now);
     if(state.stationary&&state.stillSince&&now-state.stillSince>750&&state.driftRate<0.018){
       state.velocity={x:0,y:0,z:0};
-      setStage('locked','Synchronization basis qualified. The full fixed 3D lattice is now active for walk-around testing before save.',100,'locked');
+      setStage('locked','Synchronization basis qualified. A world-centered 360° 3D lattice is active; walk/lean to verify XYZ translation before saving.',100,'locked');
       ui.status.textContent='POSE LOCKED';ui.save.disabled=false;
       state.poseReason='Origin, visible FOV, world-axis translation, scale freeze, and no-creep gates passed';
     }
@@ -621,18 +656,32 @@ function drawProjectionTunnel(camQ,camPos,fx,fy,cx,cy) {
   }
   for(const sx of [-1,1])for(const sy of [-1,1])drawWorldSegment({x:sx*1.26,y:sy*.88,z:-3},{x:sx*5.04,y:sy*3.53,z:-12},camQ,camPos,fx,fy,cx,cy,'rgba(255,211,107,.35)',1);
 }
-function drawLattice(camQ,camPos,fx,fy,cx,cy,full) {
-  const xMin=-6,xMax=6,yMin=-4,yMax=4,zNear=-2,zFar=-16,step=1;
-  const stride=full?1:2;
-  for(let y=yMin;y<=yMax;y+=stride)for(let z=zNear;z>=zFar;z-=stride){const major=y%2===0&&z%2===0;drawWorldSegment({x:xMin,y,z},{x:xMax,y,z},camQ,camPos,fx,fy,cx,cy,`rgba(91,226,255,${major?.38:.18})`,major?1.1:.7);}
-  for(let x=xMin;x<=xMax;x+=stride)for(let z=zNear;z>=zFar;z-=stride){const major=x%2===0&&z%2===0;drawWorldSegment({x,y:yMin,z},{x,y:yMax,z},camQ,camPos,fx,fy,cx,cy,`rgba(91,226,255,${major?.38:.18})`,major?1.1:.7);}
-  for(let x=xMin;x<=xMax;x+=stride)for(let y=yMin;y<=yMax;y+=stride){const major=x%2===0&&y%2===0;drawWorldSegment({x,y,z:zNear},{x,y,z:zFar},camQ,camPos,fx,fy,cx,cy,`rgba(91,226,255,${major?.42:.20})`,major?1.15:.7);}
-  // Fixed colored axis tripod at a known world location inside the lattice.
-  const o={x:0,y:0,z:-5};
-  drawWorldSegment(o,{x:1.5,y:0,z:-5},camQ,camPos,fx,fy,cx,cy,'rgba(255,100,110,.98)',2.4);
-  drawWorldSegment(o,{x:0,y:1.5,z:-5},camQ,camPos,fx,fy,cx,cy,'rgba(100,255,150,.98)',2.4);
-  drawWorldSegment(o,{x:0,y:0,z:-6.5},camQ,camPos,fx,fy,cx,cy,'rgba(100,150,255,.98)',2.4);
+function drawMarkerCube(center,size,camQ,camPos,fx,fy,cx,cy,stroke){
+  const s=size/2,pts=[];
+  for(const dx of [-s,s])for(const dy of [-s,s])for(const dz of [-s,s])pts.push({x:center.x+dx,y:center.y+dy,z:center.z+dz});
+  const idx=(ix,iy,iz)=>(ix*4+iy*2+iz);
+  for(let iy=0;iy<2;iy++)for(let iz=0;iz<2;iz++)drawWorldSegment(pts[idx(0,iy,iz)],pts[idx(1,iy,iz)],camQ,camPos,fx,fy,cx,cy,stroke,2);
+  for(let ix=0;ix<2;ix++)for(let iz=0;iz<2;iz++)drawWorldSegment(pts[idx(ix,0,iz)],pts[idx(ix,1,iz)],camQ,camPos,fx,fy,cx,cy,stroke,2);
+  for(let ix=0;ix<2;ix++)for(let iy=0;iy<2;iy++)drawWorldSegment(pts[idx(ix,iy,0)],pts[idx(ix,iy,1)],camQ,camPos,fx,fy,cx,cy,stroke,2);
 }
+function drawLattice(camQ,camPos,fx,fy,cx,cy,full) {
+  // True world-centered 3D lattice.  The startup camera is INSIDE it, so
+  // turning 90°, 180° or 360° still reveals fixed virtual structure.
+  const lim=full?12:8, yLim=full?8:6, step=full?2:3;
+  const minor='rgba(91,226,255,.18)',major='rgba(91,226,255,.34)';
+  for(let x=-lim;x<=lim;x+=step)for(let y=-yLim;y<=yLim;y+=step){const c=(x===0||y===0)?major:minor;drawWorldSegment({x,y,z:-lim},{x,y,z:lim},camQ,camPos,fx,fy,cx,cy,c,(x===0||y===0)?1.15:.72);}
+  for(let x=-lim;x<=lim;x+=step)for(let z=-lim;z<=lim;z+=step){const c=(x===0||z===0)?major:minor;drawWorldSegment({x,y:-yLim,z},{x,y:yLim,z},camQ,camPos,fx,fy,cx,cy,c,(x===0||z===0)?1.15:.72);}
+  for(let y=-yLim;y<=yLim;y+=step)for(let z=-lim;z<=lim;z+=step){const c=(y===0||z===0)?major:minor;drawWorldSegment({x:-lim,y,z},{x:lim,y,z},camQ,camPos,fx,fy,cx,cy,c,(y===0||z===0)?1.15:.72);}
+
+  // Six fixed direction beacons make 180°/360° tracking visually undeniable.
+  drawMarkerCube({x:5,y:0,z:0},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(255,90,100,.95)');
+  drawMarkerCube({x:-5,y:0,z:0},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(170,55,65,.92)');
+  drawMarkerCube({x:0,y:5,z:0},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(90,255,145,.95)');
+  drawMarkerCube({x:0,y:-5,z:0},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(55,165,95,.92)');
+  drawMarkerCube({x:0,y:0,z:-5},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(90,145,255,.98)');
+  drawMarkerCube({x:0,y:0,z:5},0.7,camQ,camPos,fx,fy,cx,cy,'rgba(170,105,255,.96)');
+}
+
 function drawGrid() {
   const dpr=Math.min(devicePixelRatio||1,2),rect=grid.getBoundingClientRect();
   if(grid.width!==Math.round(rect.width*dpr)||grid.height!==Math.round(rect.height*dpr))resize();
@@ -657,13 +706,14 @@ function updateUI() {
   ui.dImuHz.textContent=state.imuHz.toFixed(1);ui.dVideoHz.textContent=state.videoHz.toFixed(1);ui.dReason.textContent=state.poseReason;
   ui.dProjectionError.textContent=Number.isFinite(state.projectionError)?`${state.projectionError.toFixed(2)} px`:'—';
   ui.dOriginQuality.textContent=`${Math.round(state.originQuality*100)}%`;ui.dGridMode.textContent=state.gridMode;
+  if(ui.dVisualStep)ui.dVisualStep.textContent=state.visualStepMagnitude.toFixed(5);if(ui.dMoveGate)ui.dMoveGate.textContent=state.movementGate;
 }
 function renderLoop(now){setupMachine(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
 function resize(){const r=grid.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);grid.width=Math.max(1,Math.round(r.width*d));grid.height=Math.max(1,Math.round(r.height*d));if(state.fovX)state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(r.height/Math.max(1,r.width)))/DEG;updateVisionCanvasSize();}
 
 function basisObject() {
   return {
-    version:2.2,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
+    version:2.3,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
     axisConvention:{x:'right',y:'up',z:'backward; camera looks toward -Z'},cameraSettings:state.trackSettings,
     qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,imuHz:state.imuHz,videoHz:state.videoHz},
     note:'Reload restores the calibrated visible-camera projection and proportional scale. Without persistent real-world anchors, the current physical pose becomes the reloaded origin.'
@@ -673,7 +723,7 @@ function saveBasis(){localStorage.setItem(STORAGE_KEY,JSON.stringify(basisObject
 function loadBasis(){
   const raw=localStorage.getItem(STORAGE_KEY);if(!raw)return;
   try{
-    const b=JSON.parse(raw);if(Number(b.version)<2.2)throw new Error('Older basis format; run the new synchronization setup once.');
+    const b=JSON.parse(raw);if(Number(b.version)<2.3)throw new Error('Older basis format; run the new synchronization setup once.');
     state.fovX=clamp(b.fovX||62,34,100);state.fovY=clamp(b.fovY||48,20,100);state.scale=clamp(b.scale||1,.1,12);state.scaleLocked=true;
     state.scaleStability=b.qualification?.scaleStability||.5;state.projectionError=b.qualification?.projectionResidualPx??Infinity;
     state.baseQ=state.orientationQ;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.stillScore=0;state.stillSince=0;
@@ -681,7 +731,7 @@ function loadBasis(){
     ui.save.disabled=false;state.poseReason='Revalidating saved basis against current live camera and motion streams';
   }catch(err){ui.instruction.textContent=`Saved basis could not be loaded: ${err.message}`;}
 }
-function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-2.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-3.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 ui.start.addEventListener('click',requestPermissions);
 ui.save.addEventListener('click',saveBasis);ui.load.addEventListener('click',loadBasis);ui.reset.addEventListener('click',beginSetup);
