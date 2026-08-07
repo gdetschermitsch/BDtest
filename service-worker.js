@@ -1,4 +1,4 @@
-const CACHE='cruxtain-definitive-xyz-v2-3';
+const CACHE='cruxtain-definitive-xyz-v2-4';
 const ASSETS=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./LICENSE','./README.md','./AUDIT.md','./TEST_PLAN.md'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));

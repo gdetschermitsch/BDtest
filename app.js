@@ -9,7 +9,8 @@ const vctx = vision.getContext('2d', { willReadFrequently: true, alpha: false })
 
 const ui = {
   startCard: $('#startCard'), start: $('#startBtn'), instruction: $('#instruction'), progress: $('#progress i'),
-  status: $('#statusPill'), gridMode: $('#gridModePill'), save: $('#saveBtn'), load: $('#loadBtn'), reset: $('#resetBtn'), diag: $('#diagBtn'),
+  status: $('#statusPill'), gridMode: $('#gridModePill'), stress: $('#stressBtn'), save: $('#saveBtn'), load: $('#loadBtn'), reset: $('#resetBtn'), diag: $('#diagBtn'),
+  stressDialog: $('#stressDialog'), closeStress: $('#closeStress'), stressSummary: $('#stressSummary'), stressResults: $('#stressResults'), exportStress: $('#exportStressBtn'),
   dialog: $('#diagDialog'), closeDiag: $('#closeDiag'), export: $('#exportBtn'),
   x: $('#xVal'), y: $('#yVal'), z: $('#zVal'),
   dState: $('#dState'), dFov: $('#dFov'), dVisual: $('#dVisual'), dMotion: $('#dMotion'), dStill: $('#dStill'),
@@ -18,7 +19,8 @@ const ui = {
   dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
 };
 
-const STORAGE_KEY = 'cruxtain.xyzBasis.v2.3';
+const STORAGE_KEY = 'cruxtain.xyzBasis.v2.4';
+const LEGACY_STORAGE_KEY = 'cruxtain.xyzBasis.v2.3';
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -118,7 +120,8 @@ const state = {
   translationSignal: {x:0,y:0,z:0,confidence:0,rawMagnitude:0}, visualStepMagnitude:0, movementGate:'still', lastMoveAt:0, driftRate: 0, lastPositionForDrift: {x:0,y:0,z:0},
   poseReason: 'Not started', loopStarted: false, lastProcessAt: 0, basisSaved: false, stageEnteredAt: performance.now(),
   calib: { visualPath:0, inertialPath:0, inertialVelocity:{x:0,y:0,z:0}, lastPosition:{x:0,y:0,z:0}, motionSeen:false },
-  gridMode: 'off', worldRevision: 0
+  gridMode: 'off', worldRevision: 0,
+  stress: {active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false}
 };
 
 function setStage(stage, text, progress, pill = 'calibrating') {
@@ -164,7 +167,7 @@ async function requestPermissions() {
 
     ui.startCard.hidden = true;
     ui.reset.disabled = false;
-    ui.load.disabled = !localStorage.getItem(STORAGE_KEY);
+    ui.load.disabled = !(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY));
     resize();
     beginSetup();
     startVideoLoop();
@@ -236,7 +239,8 @@ function beginSetup() {
   state.accelBiasDevice={x:0,y:0,z:0}; state.calibrationStartedAt=performance.now(); state.lastSetupAt=performance.now();
   state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false};
   state.poseReason='Collecting a tolerant averaged origin; natural hand tremor is allowed';
-  ui.save.disabled=true;
+  resetStress();
+  ui.save.disabled=true; ui.stress.disabled=true;
   setStage('hold_still','Hold the phone normally. The origin uses a rolling average and does not require tripod-level stillness.',10);
 }
 
@@ -572,8 +576,8 @@ function updateSetupGuidance(now,originQuality=0) {
     ui.stepTimer.textContent=state.stationary?`${remaining.toFixed(1)}s`:'WAITING';
     ui.stepDetail.textContent=state.stationary?'Position is frozen while stationary—keep holding.':'Stop naturally; final drift verification begins automatically.';
   } else if(state.stage==='locked'){
-    ui.stepTimer.textContent='TEST';
-    ui.stepDetail.textContent='360° lattice is active. Walk/lean now: XYZ should change immediately; turn completely around and the lattice must still exist.';
+    if(state.stress.complete){ui.stepTimer.textContent=state.stress.overall;ui.stepDetail.textContent=`Stress complete: ${state.stress.results.filter(r=>r.pass).length}/${state.stress.results.length} tests passed. Review results, then save.`;}
+    else {ui.stepTimer.textContent='TEST';ui.stepDetail.textContent='360° lattice is active. Run Stress Test before saving the basis.';}
   }
 }
 
@@ -611,18 +615,18 @@ function setupMachine(now) {
     if(state.stationary&&state.stillSince&&now-state.stillSince>750&&state.driftRate<0.018){
       state.velocity={x:0,y:0,z:0};
       setStage('locked','Synchronization basis qualified. A world-centered 360° 3D lattice is active; walk/lean to verify XYZ translation before saving.',100,'locked');
-      ui.status.textContent='POSE LOCKED';ui.save.disabled=false;
+      ui.status.textContent='POSE LOCKED';ui.save.disabled=true;ui.stress.disabled=false;
       state.poseReason='Origin, visible FOV, world-axis translation, scale freeze, and no-creep gates passed';
     }
   } else if(state.stage==='revalidating'){
     updateSetupGuidance(now);
-    if(state.stationary&&state.stillSince&&now-state.stillSince>550){state.velocity={x:0,y:0,z:0};setStage('locked','Saved projection basis revalidated. Full 3D lattice restored at the current physical origin.',100,'locked');ui.save.disabled=false;}
+    if(state.stationary&&state.stillSince&&now-state.stillSince>550){state.velocity={x:0,y:0,z:0};const resumeStress=state.stress.active?state.stress.index:-1;setStage('locked','Saved projection basis revalidated. Full 3D lattice restored at the current physical origin.',100,'locked');ui.stress.disabled=false;ui.save.disabled=!state.stress.complete;if(resumeStress>=0)enterStressTest(resumeStress);}
   }
 
   if(state.stage==='locked'){
     updateSetupGuidance(now);
     if((!motionFresh&&now-state.lastOrientationAt>500)||state.validTracks<4||state.visualConfidence<0.055){ui.status.dataset.state='lost';ui.status.textContent='POSE WEAK';state.poseReason=!motionFresh?'Motion stream stale':'Too few reliable visual tracks';}
-    else{ui.status.dataset.state='locked';ui.status.textContent='POSE LOCKED';}
+    else{ui.status.dataset.state='locked';ui.status.textContent=state.stress.complete?(state.stress.overall==='PASS'?'STRESS PASS':'STRESS REVIEW'):'POSE LOCKED';}
   }
 }
 
@@ -708,22 +712,99 @@ function updateUI() {
   ui.dOriginQuality.textContent=`${Math.round(state.originQuality*100)}%`;ui.dGridMode.textContent=state.gridMode;
   if(ui.dVisualStep)ui.dVisualStep.textContent=state.visualStepMagnitude.toFixed(5);if(ui.dMoveGate)ui.dMoveGate.textContent=state.movementGate;
 }
-function renderLoop(now){setupMachine(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
+
+const STRESS_TESTS = [
+  {id:'stationary',name:'Stationary creep',instruction:'Hold the phone normally still for 4 seconds.',kind:'stationary'},
+  {id:'yaw360',name:'360° rotation',instruction:'Turn slowly through one complete circle and finish facing your starting direction.',kind:'yaw'},
+  {id:'xReturn',name:'X out-and-back',instruction:'Face the startup direction. Step or lean sideways, return to your starting spot, then stop.',kind:'axis',axis:'x',threshold:0.10},
+  {id:'zReturn',name:'Z out-and-back',instruction:'Face the startup direction. Move forward/back, return to your starting spot, then stop.',kind:'axis',axis:'z',threshold:0.10},
+  {id:'yReturn',name:'Y up-and-down',instruction:'Raise/lower the phone clearly, return to the starting height, then hold still.',kind:'axis',axis:'y',threshold:0.07},
+  {id:'mixedLoop',name:'Mixed motion loop',instruction:'Walk or lean through a small loop while turning, return near the start, then stop.',kind:'mixed'}
+];
+function clonePos(p){return{x:p.x,y:p.y,z:p.z};}
+function posDelta(a,b){return{x:a.x-b.x,y:a.y-b.y,z:a.z-b.z};}
+function posDist(a,b){const d=posDelta(a,b);return Math.hypot(d.x,d.y,d.z);}
+function wrapPi(a){while(a>Math.PI)a-=Math.PI*2;while(a<-Math.PI)a+=Math.PI*2;return a;}
+function cameraYaw(camQ){const f=qRotate(camQ,{x:0,y:0,z:-1});return Math.atan2(f.x,-f.z);}
+function resetStress(){
+  state.stress={active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false};
+  if(ui.stress){ui.stress.textContent='Stress Test';ui.stress.disabled=state.stage!=='locked';}
+}
+function startStressTest(){
+  if(state.stage!=='locked')return;
+  resetStress();state.stress.active=true;state.stress.startedAt=performance.now();state.stress.index=0;ui.save.disabled=true;ui.stress.textContent='Next Test';enterStressTest(0);
+}
+function enterStressTest(index){
+  const s=state.stress,t=STRESS_TESTS[index],now=performance.now();
+  s.index=index;s.stageStartedAt=now;s.testStartPos=clonePos(state.position);s.testStartQ=relativeCameraQ();s.lastPos=clonePos(state.position);s.lastYaw=cameraYaw(s.testStartQ);s.yawTravel=0;s.pathLength=0;s.maxDisplacement=0;s.maxAxis=0;s.maxOffAxis=0;s.maxDriftRate=0;s.stableSince=0;s.movementSeen=false;s.manual=false;
+  ui.stepLabel.textContent=`STRESS ${index+1} OF ${STRESS_TESTS.length}`;ui.stepDetail.textContent=t.instruction;ui.instruction.textContent=t.instruction;ui.stepTimer.textContent='0%';ui.status.textContent='STRESS TEST';ui.status.dataset.state='calibrating';state.poseReason=`Stress test: ${t.name}`;
+}
+function stressCommonSample(){
+  const s=state.stress,p=state.position,d=posDelta(p,s.testStartPos),dist=Math.hypot(d.x,d.y,d.z);s.pathLength+=posDist(p,s.lastPos);s.lastPos=clonePos(p);s.maxDisplacement=Math.max(s.maxDisplacement,dist);s.maxDriftRate=Math.max(s.maxDriftRate,state.driftRate);return{d,dist};
+}
+function finishStressResult(pass,metrics,note,manual=false){
+  const s=state.stress,t=STRESS_TESTS[s.index];s.results.push({id:t.id,name:t.name,pass:!!pass,manual:!!manual,metrics,note});
+  const next=s.index+1;if(next<STRESS_TESTS.length){enterStressTest(next);}else finishStressTest();
+}
+function finishStressTest(){
+  const s=state.stress;s.active=false;s.complete=true;s.overall=s.results.every(r=>r.pass&&!r.manual)?'PASS':(s.results.some(r=>r.pass)?'MIXED':'FAIL');
+  ui.stress.textContent='View Stress';ui.save.disabled=false;ui.status.textContent=s.overall==='PASS'?'STRESS PASS':'STRESS REVIEW';ui.status.dataset.state=s.overall==='PASS'?'locked':'calibrating';ui.stepLabel.textContent='STRESS COMPLETE';ui.stepTimer.textContent=s.overall;ui.stepDetail.textContent=`${s.results.filter(r=>r.pass).length}/${s.results.length} tests passed. Review the report before saving.`;ui.instruction.textContent='Stress qualification complete. Inspect closure and axis-purity measurements, then save the basis if the behavior is acceptable.';state.poseReason=`Stress ${s.overall}: ${s.results.filter(r=>r.pass).length}/${s.results.length} passed`;showStressResults();
+}
+function manualAdvanceStress(){
+  if(!state.stress.active)return;const s=state.stress,t=STRESS_TESTS[s.index];const {d,dist}=stressCommonSample();
+  let metrics={manualAdvance:true,closure:dist,maxDisplacement:s.maxDisplacement,pathLength:s.pathLength};
+  if(t.kind==='axis'){const axis=Math.abs(d[t.axis]);const off=Math.hypot(...['x','y','z'].filter(a=>a!==t.axis).map(a=>d[a]));metrics={...metrics,maxAxis:s.maxAxis,maxOffAxis:s.maxOffAxis,axisPurity:s.maxAxis?s.maxOffAxis/s.maxAxis:Infinity};}
+  finishStressResult(false,metrics,'Advanced manually before automatic completion.',true);
+}
+function updateStress(now){
+  const s=state.stress;if(!s.active||state.stage!=='locked')return;const t=STRESS_TESTS[s.index],elapsed=(now-s.stageStartedAt)/1000,{d,dist}=stressCommonSample();
+  if(t.kind==='stationary'){
+    const pct=clamp(elapsed/4,0,1);ui.stepTimer.textContent=`${Math.round(pct*100)}%`;ui.stepDetail.textContent=`Hold still • max displacement ${s.maxDisplacement.toFixed(4)} u • drift ${s.maxDriftRate.toFixed(4)} u/s`;
+    if(elapsed>=4){const pass=s.maxDisplacement<0.035&&s.maxDriftRate<0.025;finishStressResult(pass,{duration:elapsed,maxDisplacement:s.maxDisplacement,maxDriftRate:s.maxDriftRate,finalDisplacement:dist},pass?'No significant stationary creep detected.':'Stationary pose moved beyond the qualification threshold.');}
+    return;
+  }
+  if(t.kind==='yaw'){
+    const yaw=cameraYaw(relativeCameraQ()),dy=Math.abs(wrapPi(yaw-s.lastYaw));s.lastYaw=yaw;if(dy<0.45)s.yawTravel+=dy;const deg=s.yawTravel/DEG,closureDeg=qAngle(s.testStartQ,relativeCameraQ())/DEG;ui.stepTimer.textContent=`${Math.min(360,Math.round(deg))}°`;ui.stepDetail.textContent=`Complete 360° • position leak ${s.maxDisplacement.toFixed(3)} u • heading closure ${closureDeg.toFixed(1)}°`;
+    if(deg>=330&&closureDeg<18&&state.orientationRate<0.18){const pass=closureDeg<12&&s.maxDisplacement<0.12;finishStressResult(pass,{yawTravelDeg:deg,orientationClosureDeg:closureDeg,maxPositionLeak:s.maxDisplacement,finalPositionLeak:dist},pass?'Rotation stayed separated from XYZ and closed near its starting attitude.':'360° rotation produced excessive orientation closure error or false translation.');}else if(elapsed>28&&deg>250){const pass=closureDeg<15&&s.maxDisplacement<0.12;finishStressResult(pass,{yawTravelDeg:deg,orientationClosureDeg:closureDeg,maxPositionLeak:s.maxDisplacement,finalPositionLeak:dist},'Timed completion after a near-full rotation.');}
+    return;
+  }
+  if(t.kind==='axis'){
+    const axis=Math.abs(d[t.axis]),off=Math.hypot(...['x','y','z'].filter(a=>a!==t.axis).map(a=>d[a]));s.maxAxis=Math.max(s.maxAxis,axis);s.maxOffAxis=Math.max(s.maxOffAxis,off);if(s.maxAxis>t.threshold)s.movementSeen=true;const closure=dist,returnThreshold=Math.max(0.055,s.maxAxis*0.30);if(s.movementSeen&&closure<returnThreshold&&state.stationary){if(!s.stableSince)s.stableSince=now;}else s.stableSince=0;const purity=s.maxAxis? s.maxOffAxis/s.maxAxis:Infinity;ui.stepTimer.textContent=`${Math.round(clamp(s.maxAxis/t.threshold,0,1)*100)}%`;ui.stepDetail.textContent=`${t.axis.toUpperCase()} excursion ${s.maxAxis.toFixed(3)} u • off-axis ratio ${Number.isFinite(purity)?purity.toFixed(2):'—'} • closure ${closure.toFixed(3)} u`;
+    if(s.stableSince&&now-s.stableSince>700){const closureRatio=s.maxAxis?closure/s.maxAxis:Infinity,pass=s.maxAxis>t.threshold&&purity<0.65&&closureRatio<0.35;finishStressResult(pass,{axis:t.axis,maxAxis:s.maxAxis,maxOffAxis:s.maxOffAxis,axisPurity:purity,closure,closureRatio,pathLength:s.pathLength},pass?'Dominant motion stayed on the expected world axis and returned near the start.':'Axis cross-talk or return closure exceeded the qualification threshold.');}
+    return;
+  }
+  if(t.kind==='mixed'){
+    if(s.maxDisplacement>0.15&&s.pathLength>0.45)s.movementSeen=true;const closure=dist,closureRatio=s.maxDisplacement?closure/s.maxDisplacement:Infinity,rotClosure=qAngle(s.testStartQ,relativeCameraQ())/DEG;if(s.movementSeen&&closure<Math.max(0.08,s.maxDisplacement*0.35)&&state.stationary){if(!s.stableSince)s.stableSince=now;}else s.stableSince=0;ui.stepTimer.textContent=`${s.movementSeen?'RETURN':'MOVE'}`;ui.stepDetail.textContent=`Path ${s.pathLength.toFixed(2)} u • excursion ${s.maxDisplacement.toFixed(2)} u • closure ${closure.toFixed(3)} u`;
+    if(s.stableSince&&now-s.stableSince>800){const pass=closureRatio<0.35&&s.pathLength>0.45;finishStressResult(pass,{pathLength:s.pathLength,maxDisplacement:s.maxDisplacement,closure,closureRatio,orientationClosureDeg:rotClosure},pass?'Combined translation/rotation returned close to the starting transform.':'Mixed-motion loop accumulated excessive closure error.');}
+  }
+}
+function stressReportObject(){
+  const s=state.stress;return{version:1,completed:s.complete,overall:s.overall,startedAt:s.startedAt?new Date(Date.now()-(performance.now()-s.startedAt)).toISOString():null,results:s.results,finalDiagnostics:{position:clonePos(state.position),fovX:state.fovX,fovY:state.fovY,scale:state.scale,visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,projectionResidualPx:state.projectionError,imuHz:state.imuHz,videoHz:state.videoHz,tracks:state.validTracks}};
+}
+function renderStressResults(){
+  const r=stressReportObject(),passed=r.results.filter(x=>x.pass).length;ui.stressSummary.textContent=r.completed?`${r.overall} — ${passed}/${r.results.length} tests passed`:'Stress test has not completed.';ui.stressResults.innerHTML='';
+  for(const item of r.results){const card=document.createElement('div');card.className='stressResult';card.dataset.pass=String(item.pass);const metricText=Object.entries(item.metrics||{}).map(([k,v])=>`${k}: ${typeof v==='number'&&Number.isFinite(v)?Number(v.toFixed(4)):v}`).join(' • ');card.innerHTML=`<header><b>${item.name}</b><strong>${item.pass?'PASS':'REVIEW'}</strong></header><small>${item.note||''}</small><small>${metricText}</small>`;ui.stressResults.appendChild(card);}
+}
+function showStressResults(){renderStressResults();if(!ui.stressDialog.open)ui.stressDialog.showModal();}
+function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v2-4.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+
+function renderLoop(now){setupMachine(now);updateStress(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
 function resize(){const r=grid.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);grid.width=Math.max(1,Math.round(r.width*d));grid.height=Math.max(1,Math.round(r.height*d));if(state.fovX)state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(r.height/Math.max(1,r.width)))/DEG;updateVisionCanvasSize();}
 
 function basisObject() {
   return {
-    version:2.3,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
+    version:2.4,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
     axisConvention:{x:'right',y:'up',z:'backward; camera looks toward -Z'},cameraSettings:state.trackSettings,
-    qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,imuHz:state.imuHz,videoHz:state.videoHz},
+    qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,imuHz:state.imuHz,videoHz:state.videoHz,stress:stressReportObject()},
     note:'Reload restores the calibrated visible-camera projection and proportional scale. Without persistent real-world anchors, the current physical pose becomes the reloaded origin.'
   };
 }
 function saveBasis(){localStorage.setItem(STORAGE_KEY,JSON.stringify(basisObject()));state.basisSaved=true;ui.load.disabled=false;ui.instruction.textContent='Basis saved locally after the 3D walk-around test. Reload restores projection and scale, then establishes the current physical pose as origin.';}
 function loadBasis(){
-  const raw=localStorage.getItem(STORAGE_KEY);if(!raw)return;
+  const raw=localStorage.getItem(STORAGE_KEY)||localStorage.getItem(LEGACY_STORAGE_KEY);if(!raw)return;
   try{
-    const b=JSON.parse(raw);if(Number(b.version)<2.3)throw new Error('Older basis format; run the new synchronization setup once.');
+    resetStress(); ui.stress.disabled=true;
+    const b=JSON.parse(raw);if(Number(b.version)<2.3)throw new Error('Older basis format; run the synchronization setup once.');
     state.fovX=clamp(b.fovX||62,34,100);state.fovY=clamp(b.fovY||48,20,100);state.scale=clamp(b.scale||1,.1,12);state.scaleLocked=true;
     state.scaleStability=b.qualification?.scaleStability||.5;state.projectionError=b.qualification?.projectionResidualPx??Infinity;
     state.baseQ=state.orientationQ;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.stillScore=0;state.stillSince=0;
@@ -731,11 +812,13 @@ function loadBasis(){
     ui.save.disabled=false;state.poseReason='Revalidating saved basis against current live camera and motion streams';
   }catch(err){ui.instruction.textContent=`Saved basis could not be loaded: ${err.message}`;}
 }
-function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-3.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-4.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 ui.start.addEventListener('click',requestPermissions);
+ui.stress.addEventListener('click',()=>{if(state.stress.active)manualAdvanceStress();else if(state.stress.complete)showStressResults();else startStressTest();});
 ui.save.addEventListener('click',saveBasis);ui.load.addEventListener('click',loadBasis);ui.reset.addEventListener('click',beginSetup);
 ui.diag.addEventListener('click',()=>ui.dialog.showModal());ui.closeDiag.addEventListener('click',()=>ui.dialog.close());ui.export.addEventListener('click',exportBasis);
+ui.closeStress.addEventListener('click',()=>ui.stressDialog.close());ui.exportStress.addEventListener('click',exportStressReport);
 addEventListener('resize',resize);
 addEventListener('orientationchange',()=>setTimeout(()=>{resize();if(state.stage==='locked')setStage('revalidating','Screen orientation changed. Hold normally while axes and projection revalidate.',94);},250));
 if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{});

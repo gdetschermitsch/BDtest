@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
   <meta name="theme-color" content="#050608" />
-  <title>CRUXTAIN Definitive XYZ v2.3</title>
+  <title>CRUXTAIN Definitive XYZ v2.4 Stress Qualification</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -38,12 +38,23 @@
       </div>
       <div id="progress"><i></i></div>
       <div class="controls">
+        <button id="stressBtn" disabled>Stress Test</button>
         <button id="saveBtn" disabled>Save Basis</button>
         <button id="loadBtn" disabled>Reload Basis</button>
         <button id="resetBtn" disabled>Reset</button>
         <button id="diagBtn">Diagnostics</button>
       </div>
     </section>
+
+
+
+    <dialog id="stressDialog">
+      <header><h2>XYZ Stress Qualification</h2><button id="closeStress" aria-label="Close">×</button></header>
+      <div id="stressSummary" class="stressSummary">No stress test has been run.</div>
+      <div id="stressResults" class="stressResults"></div>
+      <p class="warning">The report measures internal transform stability, axis separation, rotation leakage, and return closure. It is evidence from this phone/session, not external motion-capture ground truth.</p>
+      <button id="exportStressBtn">Export Stress Report JSON</button>
+    </dialog>
 
     <dialog id="diagDialog">
       <header><h2>Pose Diagnostics</h2><button id="closeDiag" aria-label="Close">×</button></header>
