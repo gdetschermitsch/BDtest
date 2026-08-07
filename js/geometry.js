@@ -1,53 +1,23 @@
-import{dot,norm,sub,add,scale,cross,mm,mv,tr,symEig,svd3,det3,I3,rodrigues,solve}from'./linalg.js';
-function normPt(p,K){return[(p.x-K.cx)/K.fx,(p.y-K.cy)/K.fy,1]}
-function estimateE(sample,K){const A=[];for(const q of sample){const a=normPt({x:q.prevX,y:q.prevY},K),b=normPt(q,K);A.push(b[0]*a[0],b[0]*a[1],b[0],b[1]*a[0],b[1]*a[1],b[1],a[0],a[1],1)}let AtA=new Array(81).fill(0);for(let r=0;r<9;r++)for(let c=0;c<9;c++)for(let i=0;i<sample.length;i++)AtA[r*9+c]+=A[i*9+r]*A[i*9+c];let e=symEig(AtA,9)[0].vector;const {U,S,V}=svd3(e),s=(S[0]+S[1])/2,D=[s,0,0,0,s,0,0,0,0];return mm(mm(U,D,3,3,3),tr(V,3,3),3,3,3)}
-function sampson(E,q,K){const x=normPt({x:q.prevX,y:q.prevY},K),xp=normPt(q,K),Ex=mv(E,x,3,3),Etx=mv(tr(E,3,3),xp,3,3),v=dot(xp,Ex);return v*v/(Ex[0]**2+Ex[1]**2+Etx[0]**2+Etx[1]**2+1e-12)}
-export function essentialRansac(tracks,K,iters=180,threshold=2e-4){if(tracks.length<16)return null;let best=null;for(let it=0;it<iters;it++){const s=[],used=new Set;while(s.length<8){const i=(Math.random()*tracks.length)|0;if(!used.has(i)){used.add(i);s.push(tracks[i])}}const E=estimateE(s,K),inliers=tracks.filter(q=>sampson(E,q,K)<threshold);if(!best||inliers.length>best.inliers.length)best={E,inliers}}if(!best||best.inliers.length<14)return null;best.E=estimateE(best.inliers,K);return best}
-function triangulateRay(q,R,t,K){const d1=normPt({x:q.prevX,y:q.prevY},K),d2=normPt(q,K),Rt=tr(R,3,3),C2=scale(mv(Rt,t,3,3),-1),v1=scale(d1,1/norm(d1)),v2=mv(Rt,d2,3,3);for(let i=0;i<3;i++)v2[i]/=norm(v2);const a=dot(v1,v1),b=dot(v1,v2),c=dot(v2,v2),w0=scale(C2,-1),d=dot(v1,w0),e=dot(v2,w0),den=a*c-b*b;if(Math.abs(den)<1e-7)return null;const s=(b*e-c*d)/den,u=(a*e-b*d)/den,P1=scale(v1,s),P2=add(C2,scale(v2,u)),P=scale(add(P1,P2),.5),Pc2=add(mv(R,P,3,3),t);if(P[2]<=.03||Pc2[2]<=.03)return null;
-const ca=Math.max(-1,Math.min(1,dot(v1,v2)/(norm(v1)*norm(v2)+1e-12)));
-const parallaxDeg=Math.acos(ca)*180/Math.PI;
-return{P,error:norm(sub(P1,P2)),parallaxDeg,depth1:P[2],depth2:Pc2[2]}}
-function decomposeE(E){const{U,V}=svd3(E),W=[0,-1,0,1,0,0,0,0,1],Wt=tr(W,3,3),Vt=tr(V,3,3),R1=mm(mm(U,W,3,3,3),Vt,3,3,3),R2=mm(mm(U,Wt,3,3,3),Vt,3,3,3);if(det3(R1)<0)for(let i=0;i<9;i++)R1[i]*=-1;if(det3(R2)<0)for(let i=0;i<9;i++)R2[i]*=-1;const t=[U[2],U[5],U[8]];return[[R1,t],[R1,scale(t,-1)],[R2,t],[R2,scale(t,-1)]]}
-export function recoverPose(E,inliers,K){let best=null;for(const [R,t] of decomposeE(E)){const pts=[];for(const q of inliers.slice(0,100)){const p=triangulateRay(q,R,t,K);if(p&&p.error<.2)pts.push({track:q,...p})}if(!best||pts.length>best.points.length)best={R,t,points:pts}}return best&&best.points.length>=10?best:null}
-export function project(P,R,t,K){const c=add(mv(R,P,3,3),t);if(c[2]<=1e-4)return null;return{x:K.fx*c[0]/c[2]+K.cx,y:K.fy*c[1]/c[2]+K.cy,z:c[2]}}
-export function optimizePose(corr,R0,t0,K,iters=12){
-  let w=[0,0,0], t=t0.slice(), lambda=1e-2;
-  function evaluate(ww,tt){
-    const R=mm(rodrigues(ww),R0,3,3,3), rows=[];
-    let e=0,n=0;
-    for(const c of corr){
-      const p=project(c.P,R,tt,K); if(!p) continue;
-      const rx=c.u-p.x, ry=c.v-p.y, d=Math.hypot(rx,ry); if(d>30) continue;
-      rows.push({c,p,rx,ry}); e+=rx*rx+ry*ry; n+=2;
-    }
-    return {R,e,n,rows,rms:n?Math.sqrt(e/n):Infinity};
-  }
-  let cur=evaluate(w,t); if(cur.rows.length<8) return null;
-  for(let it=0; it<iters; it++){
-    const H=new Array(36).fill(0), g=new Array(6).fill(0), eps=2e-4;
-    for(const row of cur.rows){
-      const Jx=new Array(6).fill(0), Jy=new Array(6).fill(0);
-      for(let k=0;k<6;k++){
-        const ww=w.slice(), tt=t.slice();
-        if(k<3) ww[k]+=eps; else tt[k-3]+=eps;
-        const Rk=mm(rodrigues(ww),R0,3,3,3), pk=project(row.c.P,Rk,tt,K);
-        if(pk){Jx[k]=(pk.x-row.p.x)/eps; Jy[k]=(pk.y-row.p.y)/eps;}
-      }
-      for(let a=0;a<6;a++){
-        g[a]+=Jx[a]*row.rx+Jy[a]*row.ry;
-        for(let b=0;b<6;b++) H[a*6+b]+=Jx[a]*Jx[b]+Jy[a]*Jy[b];
-      }
-    }
-    for(let i=0;i<6;i++) H[i*6+i]+=lambda;
-    const d=solve(H,g,6); if(!d) return null;
-    const wn=w.map((v,i)=>v+d[i]), tn=t.map((v,i)=>v+d[i+3]), cand=evaluate(wn,tn);
-    if(cand.rows.length>=8 && cand.e<cur.e){
-      w=wn; t=tn; cur=cand; lambda=Math.max(1e-5,lambda*.35);
-      if(norm(d)<1e-6) break;
-    }else{
-      lambda=Math.min(1e5,lambda*8);
-    }
-  }
-  return cur.rows.length>=8 ? {R:cur.R,t,rms:cur.rms,used:cur.rows.length} : null;
-}
+import{dot,norm,sub,add,scale,cross,mm,mv,tr,symEig,rodrigues,solve,I3}from'./linalg.js';
+export const median=a=>{if(!a.length)return 0;const b=[...a].sort((x,y)=>x-y),m=b.length>>1;return b.length&1?b[m]:(b[m-1]+b[m])/2};
+export function normRay(x,y,K){const r=[(x-K.cx)/K.fx,(y-K.cy)/K.fy,1],n=norm(r)||1;return r.map(v=>v/n)}
+export function pixelFromRay(r,K){if(r[2]<=1e-8)return null;return{x:K.fx*r[0]/r[2]+K.cx,y:K.fy*r[1]/r[2]+K.cy}}
+export function rotationResidual(track,R,K){const p=pixelFromRay(mv(R,normRay(track.prevX,track.prevY,K),3,3),K);return p?Math.hypot(track.x-p.x,track.y-p.y):Infinity}
+export function derotatedParallax(tracks,R,K){const vals=[],rows=[];for(const q of tracks){const a=normRay(q.prevX,q.prevY,K),b=normRay(q.x,q.y,K),ra=mv(R,a,3,3),p=pixelFromRay(ra,K);if(!p)continue;const residual=Math.hypot(q.x-p.x,q.y-p.y);vals.push(residual);rows.push({...q,residual,a,b,ra})}return{median:median(vals),rows}}
+function nullVector3(rows){const A=new Array(9).fill(0);for(const r of rows)for(let i=0;i<3;i++)for(let j=0;j<3;j++)A[i*3+j]+=r[i]*r[j];return symEig(A,3)[0].vector}
+function epiRow(q,R,K){const a=normRay(q.prevX,q.prevY,K),b=normRay(q.x,q.y,K);return cross(b,mv(R,a,3,3))}
+function epiError(row,t){return Math.abs(dot(row,t))/(norm(row)*norm(t)+1e-12)}
+export function knownRTranslationRansac(tracks,R,K,iters=90,threshold=0.003){if(tracks.length<10)return null;const rows=tracks.map(q=>({q,row:epiRow(q,R,K)})).filter(x=>norm(x.row)>1e-6);if(rows.length<10)return null;let best=null;for(let it=0;it<iters;it++){const s=[],used=new Set;while(s.length<3){const i=(Math.random()*rows.length)|0;if(!used.has(i)){used.add(i);s.push(rows[i].row)}}let t=nullVector3(s),n=norm(t);if(!n)continue;t=t.map(v=>v/n);const inliers=rows.filter(x=>epiError(x.row,t)<threshold);if(!best||inliers.length>best.inliers.length)best={t,inliers}}if(!best||best.inliers.length<8)return null;let t=nullVector3(best.inliers.map(x=>x.row)),n=norm(t);t=t.map(v=>v/(n||1));const a=cheirality(best.inliers.map(x=>x.q),R,t,K),b=cheirality(best.inliers.map(x=>x.q),R,t.map(v=>-v),K);const chosen=b.good>a.good?{t:t.map(v=>-v),tri:b}:{t,tri:a};return{t:chosen.t,inliers:best.inliers.map(x=>x.q),points:chosen.tri.points,positive:chosen.tri.good}}
+export function triangulate(q,R,t,K){const v1=normRay(q.prevX,q.prevY,K),d2=normRay(q.x,q.y,K),Rt=tr(R,3,3),C2=scale(mv(Rt,t,3,3),-1),v2=mv(Rt,d2,3,3);const nv2=norm(v2)||1;for(let i=0;i<3;i++)v2[i]/=nv2;const a=dot(v1,v1),b=dot(v1,v2),c=dot(v2,v2),w0=scale(C2,-1),d=dot(v1,w0),e=dot(v2,w0),den=a*c-b*b;if(Math.abs(den)<1e-8)return null;const s=(b*e-c*d)/den,u=(a*e-b*d)/den,P1=scale(v1,s),P2=add(C2,scale(v2,u)),P=scale(add(P1,P2),.5),Pc2=add(mv(R,P,3,3),t);const parallax=Math.acos(Math.max(-1,Math.min(1,dot(v1,v2))))*180/Math.PI;return{P,error:norm(sub(P1,P2)),parallaxDeg:parallax,depth1:P[2],depth2:Pc2[2],positive:P[2]>.03&&Pc2[2]>.03}}
+function cheirality(tracks,R,t,K){const points=[];let good=0;for(const q of tracks.slice(0,140)){const p=triangulate(q,R,t,K);if(p&&p.positive&&p.error<.25){good++;points.push({track:q,...p})}}return{good,points}}
+export function projectWorld(P,Rwc,p,K){const Rcw=tr(Rwc,3,3),c=mv(Rcw,sub(P,p),3,3);if(c[2]<=1e-5)return null;return{x:K.fx*c[0]/c[2]+K.cx,y:K.fy*c[1]/c[2]+K.cy,z:c[2]}}
+function solveKnownRT(corr,Rwc,K){const Rcw=tr(Rwc,3,3),A=[],b=[];for(const c of corr){const q=mv(Rcw,c.P,3,3),u=(c.x-K.cx)/K.fx,v=(c.y-K.cy)/K.fy;A.push(1,0,-u);b.push(u*q[2]-q[0]);A.push(0,1,-v);b.push(v*q[2]-q[1])}if(corr.length<2)return null;const H=new Array(9).fill(0),g=[0,0,0];for(let r=0;r<b.length;r++)for(let i=0;i<3;i++){g[i]+=A[r*3+i]*b[r];for(let j=0;j<3;j++)H[i*3+j]+=A[r*3+i]*A[r*3+j]}const t=solve(H,g,3);if(!t)return null;return scale(mv(Rwc,t,3,3),-1)}
+export function knownRPoseRansac(corr,Rwc,K,iters=32,thresholdPx=4){if(corr.length<6)return null;let best=null;for(let it=0;it<iters;it++){const sample=[],used=new Set;while(sample.length<3){const i=(Math.random()*corr.length)|0;if(!used.has(i)){used.add(i);sample.push(corr[i])}}const p=solveKnownRT(sample,Rwc,K);if(!p)continue;const inliers=[];let se=0;for(const c of corr){const z=projectWorld(c.P,Rwc,p,K);if(!z)continue;const e=Math.hypot(z.x-c.x,z.y-c.y);if(e<thresholdPx){inliers.push(c);se+=e*e}}if(!best||inliers.length>best.inliers.length)best={p,inliers,rms:inliers.length?Math.sqrt(se/inliers.length):Infinity}}if(!best||best.inliers.length<6)return null;const p=solveKnownRT(best.inliers,Rwc,K);if(!p)return null;let se=0,n=0;const final=[];for(const c of corr){const z=projectWorld(c.P,Rwc,p,K);if(!z)continue;const e=Math.hypot(z.x-c.x,z.y-c.y);if(e<thresholdPx){final.push(c);se+=e*e;n++}}return n>=6?{p,inliers:final,rms:Math.sqrt(se/n)}:null}
+export function composeRelativePose(RwcA,pA,RwcB,pB){const RcwB=tr(RwcB,3,3),R=mm(RcwB,RwcA,3,3,3),t=mv(RcwB,sub(pA,pB),3,3);return{R,t}}
+export function rotationAngleDeg(R){const trc=R[0]+R[4]+R[8],c=Math.max(-1,Math.min(1,(trc-1)/2));return Math.acos(c)*180/Math.PI}
+export{rodrigues,I3,mm,mv,tr,add,sub,scale,norm};
 
+function cameraPoseFromWorldPose(Rwc,p){const Rcw=tr(Rwc,3,3);return{Rcw,t:scale(mv(Rcw,p,3,3),-1)}}
+function worldPoseFromCameraPose(Rcw,t){const Rwc=tr(Rcw,3,3);return{Rwc,p:scale(mv(Rwc,t,3,3),-1)}}
+function projectCamera(P,Rcw,t,K){const c=add(mv(Rcw,P,3,3),t);if(c[2]<=1e-5)return null;return{x:K.fx*c[0]/c[2]+K.cx,y:K.fy*c[1]/c[2]+K.cy,z:c[2]}}
+export function refinePose6DoF(corr,Rwc0,p0,K,iters=10){if(corr.length<8)return null;const base=cameraPoseFromWorldPose(Rwc0,p0);let w=[0,0,0],t=base.t.slice(),lambda=1e-2;function evalPose(ww,tt){const Rcw=mm(rodrigues(ww),base.Rcw,3,3,3);let se=0,sw=0,rows=[];for(const c of corr){const z=projectCamera(c.P,Rcw,tt,K);if(!z)continue;const rx=c.x-z.x,ry=c.y-z.y,d=Math.hypot(rx,ry);if(d>20)continue;const wt=d<=4?1:4/d;rows.push({c,z,rx,ry,wt});se+=wt*(rx*rx+ry*ry);sw+=2*wt}return{Rcw,rows,rms:sw?Math.sqrt(se/sw):Infinity,se}}let cur=evalPose(w,t);if(cur.rows.length<8)return null;for(let it=0;it<iters;it++){const H=new Array(36).fill(0),g=new Array(6).fill(0),eps=1e-4;for(const row of cur.rows){const Jx=new Array(6).fill(0),Jy=new Array(6).fill(0);for(let k=0;k<6;k++){const ww=w.slice(),tt=t.slice();if(k<3)ww[k]+=eps;else tt[k-3]+=eps;const Rk=mm(rodrigues(ww),base.Rcw,3,3,3),z=projectCamera(row.c.P,Rk,tt,K);if(z){Jx[k]=(z.x-row.z.x)/eps;Jy[k]=(z.y-row.z.y)/eps}}for(let a=0;a<6;a++){g[a]+=row.wt*(Jx[a]*row.rx+Jy[a]*row.ry);for(let b=0;b<6;b++)H[a*6+b]+=row.wt*(Jx[a]*Jx[b]+Jy[a]*Jy[b])}}for(let i=0;i<6;i++)H[i*6+i]+=lambda;const d=solve(H,g,6);if(!d)break;const wn=w.map((v,i)=>v+d[i]),tn=t.map((v,i)=>v+d[i+3]),cand=evalPose(wn,tn);if(cand.rows.length>=8&&cand.se<cur.se){w=wn;t=tn;cur=cand;lambda=Math.max(1e-5,lambda*.4);if(norm(d)<1e-6)break}else lambda=Math.min(1e4,lambda*6)}const wp=worldPoseFromCameraPose(cur.Rcw,t),delta=mm(tr(Rwc0,3,3),wp.Rwc,3,3,3);return{...wp,rms:cur.rms,used:cur.rows.length,rotationCorrectionDeg:rotationAngleDeg(delta)}}

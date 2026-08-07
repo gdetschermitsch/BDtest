@@ -9,15 +9,3 @@ const pairs=Array.from({length:n},(_,i)=>({value:A[i*n+i],vector:Array.from({len
 export function svd3(A){const At=tr(A,3,3),AtA=mm(At,A,3,3,3),ep=symEig(AtA,3).sort((a,b)=>b.value-a.value);let V=[];for(let r=0;r<3;r++)for(let c=0;c<3;c++)V.push(ep[c].vector[r]);const S=ep.map(e=>Math.sqrt(Math.max(0,e.value)));let U=new Array(9).fill(0);for(let c=0;c<3;c++){let v=[V[c],V[3+c],V[6+c]],u=mv(A,v,3,3),sn=S[c];if(sn>1e-8)u=u.map(x=>x/sn);else u=c===2?cross([U[0],U[3],U[6]],[U[1],U[4],U[7]]):[0,0,0];const nn=norm(u)||1;u=u.map(x=>x/nn);for(let r=0;r<3;r++)U[r*3+c]=u[r]}if(det3(U)<0)for(let r=0;r<3;r++)U[r*3+2]*=-1;if(det3(V)<0)for(let r=0;r<3;r++)V[r*3+2]*=-1;return{U,S,V}}
 export const det3=a=>a[0]*(a[4]*a[8]-a[5]*a[7])-a[1]*(a[3]*a[8]-a[5]*a[6])+a[2]*(a[3]*a[7]-a[4]*a[6]);
 export function rodrigues(w){const t=norm(w);if(t<1e-9)return I3();const [x,y,z]=w.map(v=>v/t),c=Math.cos(t),s=Math.sin(t),C=1-c;return[x*x*C+c,x*y*C-z*s,x*z*C+y*s,y*x*C+z*s,y*y*C+c,y*z*C-x*s,z*x*C-y*s,z*y*C+x*s,z*z*C+c]}
-
-export function skew(v){return[0,-v[2],v[1],v[2],0,-v[0],-v[1],v[0],0]}
-export function outer(a,b){const o=[];for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++)o.push(a[i]*b[j]);return o}
-export function normalize(v){const n=norm(v)||1;return v.map(x=>x/n)}
-export function rotX(a){const c=Math.cos(a),s=Math.sin(a);return[1,0,0,0,c,-s,0,s,c]}
-export function rotY(a){const c=Math.cos(a),s=Math.sin(a);return[c,0,s,0,1,0,-s,0,c]}
-export function rotZ(a){const c=Math.cos(a),s=Math.sin(a);return[c,-s,0,s,c,0,0,0,1]}
-export function orthonormalize(R){
- let x=normalize([R[0],R[3],R[6]]),y=[R[1],R[4],R[7]];
- y=normalize(sub(y,scale(x,dot(x,y))));let z=normalize(cross(x,y));y=normalize(cross(z,x));
- return[x[0],y[0],z[0],x[1],y[1],z[1],x[2],y[2],z[2]]
-}

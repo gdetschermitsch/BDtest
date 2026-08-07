@@ -1,12 +1,2 @@
-import{tr,mv,sub}from'./linalg.js';
-export class WorldRenderer{
- constructor(canvas){this.c=canvas;this.x=canvas.getContext('2d')}
- draw(state,K,W,H){
-   this.c.width=innerWidth*devicePixelRatio;this.c.height=innerHeight*devicePixelRatio;this.x.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);this.x.clearRect(0,0,innerWidth,innerHeight);
-   if(!state.metricPosition||state.scaleState!=='METRIC LOCKED')return;
-   const Rcw=tr(state.Rwc,3,3),p=state.metricPosition,sx=innerWidth/W,sy=innerHeight/H;
-   const P=q=>{const d=sub(q,p),c=mv(Rcw,d,3,3);if(c[2]<.05)return null;return{x:(K.fx*c[0]/c[2]+K.cx)*sx,y:(K.fy*c[1]/c[2]+K.cy)*sy}}
-   this.x.lineWidth=1;
-   for(let z=-5;z<=5;z+=.5)for(let axis=0;axis<2;axis++){const a=axis?[z,0,-5]:[-5,0,z],b=axis?[z,0,5]:[5,0,z],u=P(a),v=P(b);if(!u||!v)continue;this.x.strokeStyle=Math.abs(z)<.01?'rgba(255,255,255,.9)':'rgba(255,255,255,.28)';this.x.beginPath();this.x.moveTo(u.x,u.y);this.x.lineTo(v.x,v.y);this.x.stroke()}
- }
-}
+import{projectWorld}from'./geometry.js';
+export class WorldRenderer{constructor(canvas,K){this.canvas=canvas;this.ctx=canvas.getContext('2d');this.K=K}draw(pose){const c=this.ctx,cv=this.canvas;cv.width=innerWidth*devicePixelRatio;cv.height=innerHeight*devicePixelRatio;c.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);c.clearRect(0,0,innerWidth,innerHeight);if(!pose?.canDriveVirtual||!pose.Rwc)return;const sx=innerWidth/(this.K.cx*2),sy=innerHeight/(this.K.cy*2);c.lineWidth=1;c.strokeStyle='rgba(120,230,255,.65)';const extent=3,step=.25;const drawLine=(A,B)=>{const a=projectWorld(A,pose.Rwc,pose.position,this.K),b=projectWorld(B,pose.Rwc,pose.position,this.K);if(!a||!b)return;c.beginPath();c.moveTo(a.x*sx,a.y*sy);c.lineTo(b.x*sx,b.y*sy);c.stroke()};for(let v=-extent;v<=extent+.001;v+=step){drawLine([-extent,0,v],[extent,0,v]);drawLine([v,0,-extent],[v,0,extent])}c.lineWidth=2;c.strokeStyle='rgba(255,255,255,.9)';drawLine([0,0,0],[1,0,0]);drawLine([0,0,0],[0,1,0]);drawLine([0,0,0],[0,0,1])}}
