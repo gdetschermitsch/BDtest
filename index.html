@@ -1,1 +1,74 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><title>CRUXTAIN Objective Translator</title><link rel="stylesheet" href="css/app.css"><style>.phase{margin:7px 0;padding:8px 10px;border-radius:10px;background:#ffffff10;font-size:12px;font-weight:800}.controls{flex-wrap:wrap;justify-content:center}</style></head><body><video id="cam" autoplay muted playsinline></video><canvas id="overlay"></canvas><div class="hud" id="hud"><h1>CRUXTAIN · Objective Translator v1</h1><div id="state" class="state warn">READY — tap Start</div><div class="phase">Reality measures → translator resolves → virtual world obeys.</div><div class="grid"><span>Camera</span><b id="camera">—</b><span>Process</span><b id="proc">—</b><span>FPS</span><b id="fps">—</b><span>Features</span><b id="features">0</b><span>Tracks</span><b id="tracks">0</b><span>De-rotated parallax</span><b id="parallax">0.00 px</b><span>Pose authority</span><b id="authority">NONE</b><span>Map confirmed/total</span><b id="map">0/0</b><span>PnP inliers</span><b id="pnp">0</b><span>Reprojection</span><b id="reproj">—</b><span>Focal calibration</span><b id="focal">—</b><span>Camera↔IMU offset</span><b id="offset">—</b><span>IMU bias</span><b id="bias">—</b><span>Metric scale</span><b id="scale">UNRESOLVED</b><span>XYZ units</span><b id="units">visual</b></div><div class="grid big"><span>X</span><b id="x">0.000</b><span>Y</span><b id="y">0.000</b><span>Z</span><b id="z">0.000</b></div><div class="note">The virtual grid appears only when scale is metric and the current pose is map-locked. The renderer contains no tracking logic.</div><pre id="debug"></pre></div><div class="controls"><button id="start">Start</button><button id="reset">Reset World</button><button id="dbg">Diagnostics</button></div><script type="module" src="js/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#050608" />
+  <title>CRUXTAIN Definitive XYZ</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="cameraShell" aria-label="Live camera and virtual grid">
+      <video id="camera" autoplay playsinline muted></video>
+      <canvas id="grid"></canvas>
+      <canvas id="vision" width="240" height="180" hidden></canvas>
+      <div id="crosshair" aria-hidden="true"><span></span><span></span></div>
+      <div id="hud">
+        <div class="statusStack"><div id="statusPill" data-state="idle">IDLE</div><div id="gridModePill">GRID OFF</div></div>
+        <div id="poseReadout">
+          <span>X <b id="xVal">0.000</b></span>
+          <span>Y <b id="yVal">0.000</b></span>
+          <span>Z <b id="zVal">0.000</b></span>
+        </div>
+      </div>
+      <div id="startCard">
+        <h1>Definitive XYZ</h1>
+        <p>Creates a local world at <strong>0,0,0</strong>, synchronizes a virtual grid to the live camera, then tracks one authoritative phone pose.</p>
+        <button id="startBtn">Allow Camera + Motion</button>
+        <small>Requires HTTPS. GitHub Pages provides HTTPS.</small>
+      </div>
+    </section>
+
+    <section id="controlStrip">
+      <div id="setupMessage">
+        <div id="stepLine"><b id="stepLabel">READY</b><span id="stepDetail">Press “Allow Camera + Motion” to begin.</span><b id="stepTimer">—</b></div>
+        <div id="instruction">The app has not started calibration.</div>
+      </div>
+      <div id="progress"><i></i></div>
+      <div class="controls">
+        <button id="saveBtn" disabled>Save Basis</button>
+        <button id="loadBtn" disabled>Reload Basis</button>
+        <button id="resetBtn" disabled>Reset</button>
+        <button id="diagBtn">Diagnostics</button>
+      </div>
+    </section>
+
+    <dialog id="diagDialog">
+      <header><h2>Pose Diagnostics</h2><button id="closeDiag" aria-label="Close">×</button></header>
+      <div class="diagGrid">
+        <span>Setup state</span><b id="dState">idle</b>
+        <span>Field of view</span><b id="dFov">—</b>
+        <span>Visual confidence</span><b id="dVisual">0%</b>
+        <span>Motion confidence</span><b id="dMotion">0%</b>
+        <span>Stationary lock</span><b id="dStill">off</b>
+        <span>Processing rate</span><b id="dFps">0</b>
+        <span>Reliable feature tracks</span><b id="dTracks">0</b>
+        <span>Stationary drift</span><b id="dDrift">0</b>
+        <span>Motion sample rate</span><b id="dImuHz">0</b>
+        <span>Video frame rate</span><b id="dVideoHz">0</b>
+        <span>World scale</span><b id="dScale">1.000</b>
+        <span>Pose quality</span><b id="dQuality">unqualified</b>
+        <span>Current gate/reason</span><b id="dReason">Not started</b>
+        <span>Projection residual</span><b id="dProjectionError">—</b>
+        <span>Origin quality</span><b id="dOriginQuality">0%</b>
+        <span>Grid mode</span><b id="dGridMode">off</b>
+      </div>
+      <p class="warning">“Locked” now requires projection evidence, robust multi-point tracking, visual/inertial translation evidence, and a stationary zero-velocity drift check. Browser data remains an estimate rather than external motion-capture ground truth.</p>
+      <button id="exportBtn">Export Basis JSON</button>
+    </dialog>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
