@@ -1,0 +1,15 @@
+
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#05070a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+#cam,#overlay{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+#overlay{pointer-events:none}
+.hud{position:fixed;z-index:5;left:max(8px,env(safe-area-inset-left));top:max(8px,env(safe-area-inset-top));width:min(350px,calc(100vw - 16px));max-height:calc(100vh - 110px);overflow:auto;background:#06090ddd;border:1px solid #ffffff38;border-radius:15px;padding:12px;backdrop-filter:blur(10px)}
+h1{margin:0 0 8px;font-size:17px}
+.state{font-weight:900;font-size:17px;margin:4px 0 8px}.good{color:#70ff9b}.warn{color:#ffd166}.bad{color:#ff7070}
+.rows{display:grid;grid-template-columns:1.35fr 1fr;gap:4px 10px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.rows b{text-align:right}.pose{font-size:16px;font-weight:900}
+.stage{margin-top:8px;padding:8px;border:1px solid #ffffff28;border-radius:10px;font-size:12px;line-height:1.35}
+.stage strong{display:block;margin-bottom:3px}
+.controls{position:fixed;z-index:8;left:50%;bottom:max(12px,env(safe-area-inset-bottom));transform:translateX(-50%);display:flex;gap:7px}
+button{border:1px solid #fff6;background:#10151c;color:#fff;border-radius:999px;padding:11px 14px;font-weight:850;font-size:14px}
+#log{display:none;white-space:pre-wrap;font:10px ui-monospace,monospace;color:#c7ced8;margin-top:8px}.debug #log{display:block}
