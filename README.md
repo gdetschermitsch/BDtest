@@ -1,17 +1,32 @@
-# CRUXTAIN Browser VIO/SLAM Proof v1
+# CRUXTAIN Browser VIO/SLAM v2
 
-GitHub Pages, one iPhone, no beacon. This build implements the browser-accessible front half of the agreed architecture: camera feature tracks (Lucas–Kanade), robust outlier rejection, gyro rotational compensation, gravity vertical reference, compass heading seed, persistent pose state, and rejection/hold behavior.
+This build continues the agreed one-iPhone GitHub Pages architecture.
 
-## IMPORTANT accuracy boundary
-The XYZ shown in v1 is **PROPORTIONAL**, not meters. A monocular camera cannot determine metric scale from vision alone. This build deliberately labels that fact instead of pretending otherwise. The next accuracy stage is a true multi-view essential-matrix/triangulation + metric-scale constraint and map reprojection optimizer.
+## Implemented
+- OpenCV `goodFeaturesToTrack` instead of the failed homemade detector.
+- Pyramidal Lucas–Kanade temporal tracking.
+- Essential-matrix RANSAC and `recoverPose` when exposed by the loaded OpenCV.js build.
+- Geometric inlier display.
+- Keyframe gating by inlier count and parallax.
+- Triangulated landmark candidates.
+- Last-good-pose hold: rejected frames cannot move the world.
+- Gravity, heading and gyro diagnostics.
+- No beacon, acoustic ranging, WebRTC or second device.
 
-## Use
-Host this folder on HTTPS GitHub Pages. On iPhone Safari: Start → grant motion/camera → move naturally. No measured walk, beacon, second device, or return loop is required.
+## Deliberately not misrepresented
+Essential-matrix translation is only known up to scale. XYZ is displayed as **map units**, not meters. This package does not claim metric accuracy until visual–inertial scale alignment or another real metric constraint is implemented and physically validated.
 
-## Acceptance for this stage
-- Feature count should remain populated on textured scenes.
-- Inliers should remain substantial during normal motion.
-- Rotation in place should cause much less false translation than uncompensated optical flow.
-- A bad frame must show HOLDING LAST GOOD POSE instead of moving the world.
+## Physical test
+1. Upload all files to an HTTPS GitHub Pages repository.
+2. Open on iPhone Safari.
+3. Tap Start and grant camera/motion permission.
+4. Confirm visible feature dots appear.
+5. Move naturally with some sideways component, not only pure rotation.
+6. Watch for:
+   - nonzero Features and Tracked;
+   - green geometric inliers;
+   - accepted geometric keyframes;
+   - triangulated landmark count increasing;
+   - rejected frames holding the last pose.
 
-This is an instrumented engineering proof, not a claim that browser tracking already exceeds ARKit.
+No measured movement, return loop, or second device is required to operate this proof.

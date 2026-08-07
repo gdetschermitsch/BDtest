@@ -1,1 +1,62 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><title>CRUXTAIN Browser VIO/SLAM Proof</title><link rel="stylesheet" href="css/app.css"></head><body><video id="cam" autoplay muted playsinline></video><canvas id="overlay"></canvas><div class="hud" id="hud"><h1>CRUXTAIN · Browser VIO/SLAM Proof</h1><div id="state" class="state warn">READY — tap Start</div><div class="grid"><span>Features</span><b id="features">0</b><span>Inliers</span><b id="inliers">0</b><span>Landmarks</span><b id="landmarks">0</b><span>Flow residual</span><b id="residual">—</b><span>Heading</span><b id="heading">—</b><span>Gravity</span><b id="gravity">—</b><span>Gyro</span><b id="gyro">—</b><span>Scale</span><b id="scale">PROPORTIONAL</b></div><div class="grid big"><span>X</span><b id="x">0.000</b><span>Y</span><b id="y">0.000</b><span>Z</span><b id="z">0.000</b></div><div class="note">Startup is world zero. Gravity fixes vertical; compass seeds heading; gyro predicts rotation; camera feature parallax estimates translation. Bad visual updates are rejected rather than moving the world.</div><pre id="debug"></pre></div><div class="controls"><button id="start">Start</button><button id="reset">Reset World</button><button id="dbg">Diagnostics</button></div><script src="https://cdn.jsdelivr.net/npm/jsfeat@0.0.8/build/jsfeat-min.js"></script><script type="module" src="js/app.js"></script></body></html>
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>CRUXTAIN Browser VIO/SLAM v2</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<video id="cam" autoplay muted playsinline></video>
+<canvas id="overlay"></canvas>
+
+<section class="hud" id="hud">
+  <h1>CRUXTAIN · Browser VIO/SLAM v2</h1>
+  <div id="state" class="state warn">READY — tap Start</div>
+  <div class="rows">
+    <span>Vision runtime</span><b id="runtime">loading</b>
+    <span>Features</span><b id="features">0</b>
+    <span>Tracked</span><b id="tracked">0</b>
+    <span>Geometric inliers</span><b id="inliers">0</b>
+    <span>Keyframes</span><b id="keyframes">0</b>
+    <span>Triangulated landmarks</span><b id="landmarks">0</b>
+    <span>Reprojection error</span><b id="reprojection">—</b>
+    <span>Pose source</span><b id="poseSource">none</b>
+    <span>Heading</span><b id="heading">—</b>
+    <span>Gravity</span><b id="gravity">—</b>
+    <span>Gyro</span><b id="gyro">—</b>
+    <span>Metric scale</span><b id="scale">UNLOCKED</b>
+  </div>
+  <div class="rows pose">
+    <span>X</span><b id="x">0.000</b>
+    <span>Y</span><b id="y">0.000</b>
+    <span>Z</span><b id="z">0.000</b>
+  </div>
+
+  <div class="stage">
+    <strong id="stageTitle">Stage 0 · Waiting</strong>
+    <span id="stageText">The system will not move the virtual pose until real feature tracks and geometric inliers exist.</span>
+  </div>
+  <div class="stage">
+    <strong>Accuracy rule</strong>
+    Bad frames hold the previous pose. XYZ is labeled <em>map units</em> until metric scale is solved; this build does not rename arbitrary monocular scale as meters.
+  </div>
+  <pre id="log"></pre>
+</section>
+
+<div class="controls">
+  <button id="start">Start</button>
+  <button id="reset">Reset World</button>
+  <button id="debug">Diagnostics</button>
+</div>
+
+<script>
+window.Module = {
+  onRuntimeInitialized(){ window.dispatchEvent(new Event('opencv-ready')); }
+};
+</script>
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
