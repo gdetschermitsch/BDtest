@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
   <meta name="theme-color" content="#050608" />
-  <title>CRUXTAIN Definitive XYZ v3.0 Auto World-Lock</title>
+  <title>CRUXTAIN Definitive XYZ v3.1 Map-Authority World-Lock</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css?v=3.0" />
+  <link rel="stylesheet" href="styles.css?v=3.1" />
 </head>
 <body>
   <main id="app">
@@ -81,10 +81,10 @@
         <span>World basis</span><b id="dWorldBasis">—</b>
         <span>Translation direction fit</span><b id="dDirection">0%</b>
       </div>
-      <p class="warning">The runtime has no user calibration stage. It continuously refines camera/IMU timing, focal length, quiet-state IMU bias, visual-inertial metric scale, persistent 3D landmarks, map-authoritative pose, and global relocalization/loop closure while you move normally.</p>
-      <button id="exportBtn">Export Basis JSON</button>
+      <p class="warning">The runtime has no user calibration stage. Camera/IMU timing and focal geometry self-initialize before the visual map is committed; metric scale is then solved automatically per session from mapped keyframe motion plus IMU evidence. Persistent landmarks, map-authoritative PnP, and consensus loop closure repair drift while you move normally.</p>
+      <button id="exportBtn">Export Diagnostics JSON</button>
     </dialog>
   </main>
-  <script type="module" src="app.js?v=3.0"></script>
+  <script type="module" src="app.js?v=3.1"></script>
 </body>
 </html>
