@@ -16,11 +16,11 @@ const ui = {
   dState: $('#dState'), dFov: $('#dFov'), dVisual: $('#dVisual'), dMotion: $('#dMotion'), dStill: $('#dStill'),
   dFps: $('#dFps'), dScale: $('#dScale'), dQuality: $('#dQuality'), dTracks: $('#dTracks'), dDrift: $('#dDrift'),
   dImuHz: $('#dImuHz'), dVideoHz: $('#dVideoHz'), dReason: $('#dReason'), dProjectionError: $('#dProjectionError'),
-  dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), dTiming:$('#dTiming'), dWorldBasis:$('#dWorldBasis'), dDirection:$('#dDirection'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
+  dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
 };
 
-const STORAGE_KEY = 'cruxtain.xyzBasis.v2.5';
-const LEGACY_STORAGE_KEYS = ['cruxtain.xyzBasis.v2.4','cruxtain.xyzBasis.v2.3'];
+const STORAGE_KEY = 'cruxtain.xyzBasis.v2.4';
+const LEGACY_STORAGE_KEY = 'cruxtain.xyzBasis.v2.3';
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -98,48 +98,29 @@ function qAverage(samples) {
   }
   return qNorm(q(x,y,z,w));
 }
-function qSlerp(a,b,t) {
-  a=qNorm(a); b=qNorm(b);
-  let dot=a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;
-  if(dot<0){b=q(-b.x,-b.y,-b.z,-b.w);dot=-dot;}
-  if(dot>0.9995)return qNorm(q(lerp(a.x,b.x,t),lerp(a.y,b.y,t),lerp(a.z,b.z,t),lerp(a.w,b.w,t)));
-  const th=Math.acos(clamp(dot,-1,1)),s=Math.sin(th)||1;
-  const wa=Math.sin((1-t)*th)/s,wb=Math.sin(t*th)/s;
-  return qNorm(q(a.x*wa+b.x*wb,a.y*wa+b.y*wb,a.z*wa+b.z*wb,a.w*wa+b.w*wb));
-}
-function cameraHeadingAngle(camQ) {
-  const f=qRotate(camQ,{x:0,y:0,z:-1}),h=Math.hypot(f.x,f.z);
-  if(h>0.08)return -Math.atan2(f.x,-f.z);
-  const r=qRotate(camQ,{x:1,y:0,z:0});
-  return Math.atan2(-r.z,r.x);
-}
-function rawRelativeQ(absQ) {
-  if(!state.baseQ)return q();
-  return qNorm(qMul(qInv(state.baseQ),absQ));
-}
 function relativeQ(absQ) {
-  const raw=rawRelativeQ(absQ);
-  return state.orientationCorrection ? qNorm(qMul(state.orientationCorrection,raw)) : raw;
+  if (!state.baseQ) return q();
+  return qNorm(qMul(qInv(state.baseQ), absQ));
 }
 function relativeCameraQ() { return relativeQ(state.orientationQ); }
 
 const state = {
   stage: 'idle', stream: null, trackSettings: {},
-  orientationQ: q(), baseQ: null, orientationCorrection:q(), orientationHoldQ:null, previousFrameQ: null, previousFrameTime:0, orientationSamples: [], lastOrientationAt: 0, orientationRate: 0,
-  gyro: {x:0,y:0,z:0}, accelDevice: {x:0,y:0,z:0}, accelGravityDevice:{x:0,y:0,z:0}, accelWorld: {x:0,y:0,z:0}, accelBiasDevice: {x:0,y:0,z:0}, gravityWorld:{x:0,y:-9.80665,z:0}, hasLinearAcceleration:false, hasGravityAcceleration:false,
+  orientationQ: q(), baseQ: null, previousFrameQ: null, orientationSamples: [], lastOrientationAt: 0, orientationRate: 0,
+  gyro: {x:0,y:0,z:0}, accelDevice: {x:0,y:0,z:0}, accelWorld: {x:0,y:0,z:0}, accelBiasDevice: {x:0,y:0,z:0},
   position: {x:0,y:0,z:0}, velocity: {x:0,y:0,z:0},
-  fovX: 62, fovY: 48, fovSamples: [], focalConfidence: 0, projectionError: Infinity, videoImuLagMs:70, timingSamples:[], timingConfidence:0,
+  fovX: 62, fovY: 48, fovSamples: [], focalConfidence: 0, projectionError: Infinity,
   scale: 1, scaleStability: 0, scaleSamples: [], scaleLocked: false,
   visualConfidence: 0, motionConfidence: 0, stationary: false, stationaryScore: 0, stillSince: 0, stillScore: 0, originQuality: 0,
-  originQuaternionSamples: [], originAccelSamples: [], originGravitySamples:[], originCaptured: false,
+  originQuaternionSamples: [], originAccelSamples: [], originCaptured: false,
   lastMotionAt: 0, lastFrameAt: 0, calibrationStartedAt: 0, lastSetupAt: performance.now(),
   imuCount: 0, imuHz: 0, imuStamp: performance.now(), videoCount: 0, videoHz: 0, videoStamp: performance.now(),
   processedFps: 0, processCount: 0, processStamp: performance.now(),
   frame: null, previousFrame: null, tracks: [], validTracks: 0, flowMagnitude: 0,
   translationSignal: {x:0,y:0,z:0,confidence:0,rawMagnitude:0}, visualStepMagnitude:0, movementGate:'still', lastMoveAt:0, driftRate: 0, lastPositionForDrift: {x:0,y:0,z:0},
   poseReason: 'Not started', loopStarted: false, lastProcessAt: 0, basisSaved: false, stageEnteredAt: performance.now(),
-  calib: { visualPath:0, inertialPath:0, inertialVelocity:{x:0,y:0,z:0}, rawVisualPosition:{x:0,y:0,z:0}, lastPosition:{x:0,y:0,z:0}, motionSeen:false, metricCaptured:false },
-  gridMode: 'off', worldRevision: 0, translationDirectionConfidence:0,
+  calib: { visualPath:0, inertialPath:0, inertialVelocity:{x:0,y:0,z:0}, lastPosition:{x:0,y:0,z:0}, motionSeen:false },
+  gridMode: 'off', worldRevision: 0,
   stress: {active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false}
 };
 
@@ -186,7 +167,7 @@ async function requestPermissions() {
 
     ui.startCard.hidden = true;
     ui.reset.disabled = false;
-    ui.load.disabled = !(localStorage.getItem(STORAGE_KEY) || LEGACY_STORAGE_KEYS.some(k=>localStorage.getItem(k)));
+    ui.load.disabled = !(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY));
     resize();
     beginSetup();
     startVideoLoop();
@@ -224,25 +205,23 @@ function onOrientation(e) {
 function onMotion(e) {
   const now=performance.now();
   const rr=e.rotationRate||{};
-  // DeviceMotion rotation-rate axes share the physical phone frame used by the camera.
+  // Current Device Motion spec: alpha/beta/gamma are rates about device X/Y/Z.
   state.gyro={x:(rr.alpha||0)*DEG,y:(rr.beta||0)*DEG,z:(rr.gamma||0)*DEG};
-  const a=e.acceleration||{},ag=e.accelerationIncludingGravity||{};
-  const hasLinear=[a.x,a.y,a.z].every(Number.isFinite),hasGravity=[ag.x,ag.y,ag.z].every(Number.isFinite);
-  state.hasLinearAcceleration=state.hasLinearAcceleration||hasLinear;state.hasGravityAcceleration=state.hasGravityAcceleration||hasGravity;
-  if(hasGravity)state.accelGravityDevice={x:ag.x,y:ag.y,z:ag.z};
-  const rot=state.baseQ?relativeCameraQ():state.orientationQ;
+  const a=e.acceleration||{};
+  const hasLinear=[a.x,a.y,a.z].every(Number.isFinite);
   if(hasLinear){
     state.accelDevice={x:a.x,y:a.y,z:a.z};
+    const rot=state.baseQ?relativeCameraQ():state.orientationQ;
     const corrected={x:state.accelDevice.x-state.accelBiasDevice.x,y:state.accelDevice.y-state.accelBiasDevice.y,z:state.accelDevice.z-state.accelBiasDevice.z};
     state.accelWorld=qRotate(rot,corrected);
-  } else if(hasGravity){
-    if(!state.baseQ){
-      // Before the gravity vector is calibrated, do not let gravity masquerade as motion.
-      state.accelWorld={x:0,y:0,z:0};
-    } else {
-      const worldRaw=qRotate(rot,state.accelGravityDevice);
-      // The gravity vector is measured at origin in the actual browser sign convention.
-      state.accelWorld={x:worldRaw.x-state.gravityWorld.x,y:worldRaw.y-state.gravityWorld.y,z:worldRaw.z-state.gravityWorld.z};
+  } else {
+    const ag=e.accelerationIncludingGravity||{};
+    if([ag.x,ag.y,ag.z].every(Number.isFinite)){
+      const rot=state.baseQ?relativeCameraQ():state.orientationQ;
+      const worldRaw=qRotate(rot,{x:ag.x,y:ag.y,z:ag.z});
+      // Conservative gravity removal fallback. It is used as weak evidence only.
+      worldRaw.y+=9.80665;
+      state.accelWorld=worldRaw;
     }
   }
   state.lastMotionAt=now;
@@ -252,31 +231,27 @@ function onMotion(e) {
 
 function beginSetup() {
   state.position={x:0,y:0,z:0}; state.velocity={x:0,y:0,z:0};
-  state.baseQ=null; state.orientationCorrection=q(); state.orientationHoldQ=null; state.previousFrameQ=null; state.previousFrameTime=0; state.previousFrame=null; state.frame=null; state.tracks=[];
-  state.fovSamples=[]; state.timingSamples=[]; state.videoImuLagMs=70; state.timingConfidence=0; state.scaleSamples=[]; state.scale=1; state.scaleLocked=false;
+  state.baseQ=null; state.previousFrameQ=null; state.previousFrame=null; state.frame=null; state.tracks=[];
+  state.fovSamples=[]; state.scaleSamples=[]; state.scale=1; state.scaleLocked=false;
   state.focalConfidence=0; state.projectionError=Infinity; state.visualConfidence=0; state.motionConfidence=0; state.scaleStability=0;
-  state.validTracks=0; state.flowMagnitude=0; state.stationaryScore=0; state.stillSince=0; state.stillScore=0; state.originQuality=0; state.driftRate=0; state.lastPositionForDrift={x:0,y:0,z:0}; state.translationDirectionConfidence=0;
-  state.originQuaternionSamples=[]; state.originAccelSamples=[]; state.originGravitySamples=[]; state.originCaptured=false;
-  state.accelBiasDevice={x:0,y:0,z:0}; state.gravityWorld={x:0,y:-9.80665,z:0}; state.hasLinearAcceleration=false; state.hasGravityAcceleration=false; state.calibrationStartedAt=performance.now(); state.lastSetupAt=performance.now();
-  state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},rawVisualPosition:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false,metricCaptured:false};
-  state.poseReason='Collecting a gravity-level origin; natural hand tremor is allowed';
+  state.validTracks=0; state.flowMagnitude=0; state.stationaryScore=0; state.stillSince=0; state.stillScore=0; state.originQuality=0;
+  state.originQuaternionSamples=[]; state.originAccelSamples=[]; state.originCaptured=false;
+  state.accelBiasDevice={x:0,y:0,z:0}; state.calibrationStartedAt=performance.now(); state.lastSetupAt=performance.now();
+  state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false};
+  state.poseReason='Collecting a tolerant averaged origin; natural hand tremor is allowed';
   resetStress();
   ui.save.disabled=true; ui.stress.disabled=true;
   setStage('hold_still','Hold the phone normally. The origin uses a rolling average and does not require tripod-level stillness.',10);
 }
 
 function nearestOrientation(time) {
-  const a=state.orientationSamples;
-  if(!a.length)return state.orientationQ;
-  if(time<=a[0].t)return a[0].q;
-  const last=a[a.length-1]; if(time>=last.t)return last.q;
-  for(let i=1;i<a.length;i++){
-    if(a[i].t>=time){
-      const p=a[i-1],n=a[i],t=clamp((time-p.t)/Math.max(1,n.t-p.t),0,1);
-      return qSlerp(p.q,n.q,t);
-    }
+  if(!state.orientationSamples.length)return state.orientationQ;
+  let best=state.orientationSamples[0],bestDt=Math.abs(best.t-time);
+  for(let i=1;i<state.orientationSamples.length;i++){
+    const d=Math.abs(state.orientationSamples[i].t-time);
+    if(d<bestDt){best=state.orientationSamples[i];bestDt=d;}
   }
-  return last.q;
+  return best.q;
 }
 
 function startVideoLoop() {
@@ -397,27 +372,6 @@ function residualSolution(raw,prevQ,currQ,w,h,hfov=state.fovX) {
   return {raw,tracks,inliers,confidence,fx,fy};
 }
 
-function rotationProjectionError(raw,prevQ,currQ,w,h,hfov=state.fovX) {
-  const fx=0.5*w/Math.tan(hfov*DEG/2),vfov=2*Math.atan(Math.tan(hfov*DEG/2)*(h/w))/DEG,fy=0.5*h/Math.tan(vfov*DEG/2),cx=w/2,cy=h/2,errors=[];
-  for(const t of raw){const pp=predictedRotatedPixel(t.p,prevQ,currQ,fx,fy,cx,cy);if(pp)errors.push(Math.hypot(t.q.x-pp.x,t.q.y-pp.y));}
-  return errors.length>=10?median(errors):Infinity;
-}
-function estimateVideoImuTiming(raw,prevTime,currTime,w,h) {
-  if(raw.length<12)return;
-  let best=null;
-  for(let lag=0;lag<=220;lag+=10){
-    const pq=nearestOrientation(prevTime-lag),cq=nearestOrientation(currTime-lag),rot=qAngle(pq,cq);
-    if(rot<0.0025||rot>0.18)continue;
-    const error=rotationProjectionError(raw,pq,cq,w,h,state.fovX);
-    if(Number.isFinite(error)&&(!best||error<best.error))best={lag,error};
-  }
-  if(!best||best.error>8)return;
-  state.timingSamples.push(best);if(state.timingSamples.length>48)state.timingSamples.shift();
-  const recent=state.timingSamples.slice(-30),m=median(recent.map(x=>x.lag)),spread=mad(recent.map(x=>x.lag),m),err=median(recent.map(x=>x.error));
-  state.videoImuLagMs=lerp(state.videoImuLagMs,m,0.22);
-  state.timingConfidence=clamp(recent.length/12,0,1)*clamp(1-spread/55,0,1)*clamp(1-err/8,0,1);
-}
-
 function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
   const rotation=qAngle(prevQ,currQ),acc=vecLength(correctedAcceleration());
   if(raw.length<12||rotation<0.003||rotation>0.14||acc>1.6)return;
@@ -448,91 +402,58 @@ function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
 }
 
 function correctedAcceleration() { return state.accelWorld; }
-function cross3(a,b){return{x:a.y*b.z-a.z*b.y,y:a.z*b.x-a.x*b.z,z:a.x*b.y-a.y*b.x};}
-function dot3(a,b){return a.x*b.x+a.y*b.y+a.z*b.z;}
-function norm3(v){const n=vecLength(v)||1;return{x:v.x/n,y:v.y/n,z:v.z/n};}
-function smallestEigenVectorSym3(m) {
-  const a=[[m[0][0],m[0][1],m[0][2]],[m[1][0],m[1][1],m[1][2]],[m[2][0],m[2][1],m[2][2]]],v=[[1,0,0],[0,1,0],[0,0,1]];
-  for(let iter=0;iter<14;iter++){
-    let p=0,r=1,max=Math.abs(a[0][1]);
-    for(const [i,j] of [[0,2],[1,2]])if(Math.abs(a[i][j])>max){max=Math.abs(a[i][j]);p=i;r=j;}
-    if(max<1e-9)break;
-    const phi=0.5*Math.atan2(2*a[p][r],a[r][r]-a[p][p]),c=Math.cos(phi),ss=Math.sin(phi);
-    for(let k=0;k<3;k++){const apk=a[p][k],ark=a[r][k];a[p][k]=c*apk-ss*ark;a[r][k]=ss*apk+c*ark;}
-    for(let k=0;k<3;k++){const akp=a[k][p],akr=a[k][r];a[k][p]=c*akp-ss*akr;a[k][r]=ss*akp+c*akr;}
-    for(let k=0;k<3;k++){const vkp=v[k][p],vkr=v[k][r];v[k][p]=c*vkp-ss*vkr;v[k][r]=ss*vkp+c*vkr;}
-  }
-  const vals=[a[0][0],a[1][1],a[2][2]],order=[0,1,2].sort((i,j)=>vals[i]-vals[j]),i=order[0],j=order[1];
-  return {vector:norm3({x:v[0][i],y:v[1][i],z:v[2][i]}),confidence:clamp(1-Math.abs(vals[i])/(Math.abs(vals[j])+1e-8),0,1)};
-}
-function solveTranslationDirection(solution,w,h,prevQ,currQ) {
-  const {fx,fy}=solution,cx=w/2,cy=h/2,normals=[];
-  for(const t of solution.inliers){
-    const b1=norm3({x:(t.p.x-cx)/fx,y:-(t.p.y-cy)/fy,z:-1});
-    const world=qRotate(prevQ,b1),r1=norm3(qRotate(qInv(currQ),world));
-    const b2=norm3({x:(t.q.x-cx)/fx,y:-(t.q.y-cy)/fy,z:-1}),n=cross3(b2,r1),nl=vecLength(n);
-    if(nl>1e-6)normals.push({x:n.x/nl,y:n.y/nl,z:n.z/nl});
-  }
-  if(normals.length<8)return null;
-  const fit=(arr)=>{const m=[[0,0,0],[0,0,0],[0,0,0]];for(const n of arr){m[0][0]+=n.x*n.x;m[0][1]+=n.x*n.y;m[0][2]+=n.x*n.z;m[1][0]+=n.y*n.x;m[1][1]+=n.y*n.y;m[1][2]+=n.y*n.z;m[2][0]+=n.z*n.x;m[2][1]+=n.z*n.y;m[2][2]+=n.z*n.z;}return smallestEigenVectorSym3(m);};
-  let sol=fit(normals),errs=normals.map(n=>Math.abs(dot3(n,sol.vector))),em=median(errs),es=mad(errs,em),good=normals.filter((n,i)=>errs[i]<Math.max(0.012,em+2.8*es));
-  if(good.length>=7)sol=fit(good);
-  sol.confidence*=clamp(good.length/Math.max(1,normals.length),0,1);
-  return sol;
-}
-function estimateTranslation(solution,w,h,dt,frameQ,prevQ) {
+function estimateTranslation(solution,w,h,dt,frameQ) {
   if(solution.inliers.length<8||dt<=0)return {x:0,y:0,z:0,confidence:0,rawMagnitude:0};
   const {fx,fy}=solution,cx=w/2,cy=h/2;
-  // A depth-agnostic epipolar fit determines translation DIRECTION after exact rotation removal.
-  // The older median-flow estimate is retained only for arbitrary scale/magnitude and sign.
+  // Residual flow after exact rotation compensation.  The result is an
+  // arbitrary-scale camera displacement for THIS frame, not a damped velocity.
   const lateralX=median(solution.inliers.map(t=>-t.residual.x/fx));
   const lateralY=median(solution.inliers.map(t=> t.residual.y/fy));
   const zSamples=[];
   for(const t of solution.inliers){
-    const nx=(t.p.x-cx)/fx,ny=-(t.p.y-cy)/fy,denom=nx*nx+ny*ny;if(denom<0.010)continue;
-    const ux=t.residual.x/fx+lateralX,uy=-t.residual.y/fy+lateralY;zSamples.push((ux*nx+uy*ny)/denom);
+    const nx=(t.p.x-cx)/fx,ny=-(t.p.y-cy)/fy,denom=nx*nx+ny*ny;
+    if(denom<0.010)continue;
+    const ux=t.residual.x/fx+lateralX;
+    const uy=-t.residual.y/fy+lateralY;
+    zSamples.push((ux*nx+uy*ny)/denom);
   }
-  const radial=zSamples.length?median(zSamples):0,guess={x:lateralX,y:lateralY,z:-radial},guessMag=vecLength(guess);
-  const dirFit=solveTranslationDirection(solution,w,h,prevQ,frameQ);
-  let localDelta=guess,dirConfidence=0.35;
-  if(dirFit&&guessMag>1e-6){
-    // Epipolar t points from camera 2 toward camera 1, so camera-center displacement is -t.
-    let d={x:-dirFit.vector.x,y:-dirFit.vector.y,z:-dirFit.vector.z};
-    if(dot3(d,guess)<0)d={x:-d.x,y:-d.y,z:-d.z};
-    localDelta={x:d.x*guessMag,y:d.y*guessMag,z:d.z*guessMag};dirConfidence=dirFit.confidence;
-  }
-  const worldDelta=qRotate(relativeQ(frameQ),localDelta),rawMagnitude=vecLength(worldDelta);
-  const spreadX=mad(solution.inliers.map(t=>t.residual.x)),spreadY=mad(solution.inliers.map(t=>t.residual.y));
-  const parallaxPx=median(solution.inliers.map(t=>Math.hypot(t.residual.x,t.residual.y)));
-  const geometric=clamp(1-(spreadX+spreadY)/(Math.max(w,h)*0.055),0.20,1),parallax=clamp((parallaxPx-0.10)/1.15,0,1);
-  state.translationDirectionConfidence=lerp(state.translationDirectionConfidence,dirConfidence,0.24);
-  return {...worldDelta,confidence:solution.confidence*geometric*(0.35+0.65*dirConfidence)*parallax,rawMagnitude};
+  const radial=zSamples.length?median(zSamples):0;
+  const localDelta={x:lateralX,y:lateralY,z:-radial};
+  const worldDelta=qRotate(relativeQ(frameQ),localDelta);
+  const rawMagnitude=vecLength(worldDelta);
+  const spreadX=mad(solution.inliers.map(t=>t.residual.x));
+  const spreadY=mad(solution.inliers.map(t=>t.residual.y));
+  const geometric=clamp(1-(spreadX+spreadY)/(Math.max(w,h)*0.055),0.25,1);
+  return {...worldDelta,confidence:solution.confidence*geometric,rawMagnitude};
 }
 
-function updateScaleCalibration(rawVisualDelta,dt) {
+function updateScaleCalibration(rawVisualVelocity,dt) {
   if(state.scaleLocked||(state.stage!=='xyz_lock'&&state.stage!=='settle_check'))return;
-  const c=state.calib,a=correctedAcceleration(),aMag=vecLength(a);
-  if(aMag>0.045)c.motionSeen=true;
-  c.inertialVelocity.x+=a.x*dt;c.inertialVelocity.y+=a.y*dt;c.inertialVelocity.z+=a.z*dt;
-  const inertialStep=vecLength(c.inertialVelocity)*dt,visualStep=rawVisualDelta.rawMagnitude;
-  if(rawVisualDelta.confidence>0.10&&visualStep<0.20){
-    c.rawVisualPosition.x+=rawVisualDelta.x;c.rawVisualPosition.y+=rawVisualDelta.y;c.rawVisualPosition.z+=rawVisualDelta.z;c.visualPath+=visualStep;
+  const a=correctedAcceleration(),aMag=vecLength(a);
+  if(aMag>0.045)state.calib.motionSeen=true;
+  state.calib.inertialVelocity.x+=a.x*dt;
+  state.calib.inertialVelocity.y+=a.y*dt;
+  state.calib.inertialVelocity.z+=a.z*dt;
+  const inertialSpeed=vecLength(state.calib.inertialVelocity);
+  const visualStep=rawVisualVelocity.rawMagnitude;
+  const inertialStep=inertialSpeed*dt;
+  if(visualStep<0.20)state.calib.visualPath+=visualStep;
+  if(inertialStep<0.10)state.calib.inertialPath+=inertialStep;
+  if(state.stationary){
+    state.calib.inertialVelocity={x:0,y:0,z:0};
   }
-  if(inertialStep<0.10)c.inertialPath+=inertialStep;
-  if(state.stationary)c.inertialVelocity={x:0,y:0,z:0};
-  const rx=c.rawVisualPosition.x,off=Math.hypot(c.rawVisualPosition.y,c.rawVisualPosition.z),axisPurity=Math.abs(rx)>1e-5?off/Math.abs(rx):Infinity;
-  // Step 3 is now a real metric reference: the user moves exactly 0.50 m to world-right.
-  // This removes the old arbitrary 3.2 fallback and gives the lattice a physical scale.
-  if(!c.metricCaptured&&state.stationary&&Math.abs(rx)>0.022&&axisPurity<0.85){
-    const candidate=clamp(0.50/Math.abs(rx),0.12,20);
-    state.scaleSamples.push(candidate);if(state.scaleSamples.length>24)state.scaleSamples.shift();
-    const m=median(state.scaleSamples),spread=mad(state.scaleSamples,m);state.scale=m;
-    state.scaleStability=clamp(0.55+0.45*(1-axisPurity),0,1)*clamp(1-spread/(m*0.35+1e-3),0.45,1);
-    c.metricCaptured=true;
-    state.position={x:c.rawVisualPosition.x*state.scale,y:c.rawVisualPosition.y*state.scale,z:c.rawVisualPosition.z*state.scale};
-    state.velocity={x:0,y:0,z:0};
-  } else if(!c.metricCaptured){
-    state.scaleStability=clamp(Math.abs(rx)/0.07,0,0.48)*clamp(1-axisPurity/1.4,0.15,1);
+  if(state.calib.visualPath>0.015&&state.calib.inertialPath>0.004){
+    const candidate=clamp(state.calib.inertialPath/state.calib.visualPath,0.12,12);
+    state.scaleSamples.push(candidate);
+    if(state.scaleSamples.length>60)state.scaleSamples.shift();
+    const m=median(state.scaleSamples),spread=mad(state.scaleSamples,m);
+    state.scale=lerp(state.scale,m,0.06);
+    state.scaleStability=clamp(state.scaleSamples.length/18,0,1)*clamp(1-spread/(m*0.75+1e-3),0,1);
+  } else if(state.calib.visualPath>0.04){
+    // Arbitrary scale is allowed. This deterministic fallback remains fixed and never breathes.
+    const fallback=3.2;
+    state.scale=lerp(state.scale,fallback,0.035);
+    state.scaleStability=clamp(state.calib.visualPath/0.16,0,0.55);
   }
 }
 
@@ -546,8 +467,7 @@ function updatePose(rawVisualDelta,dt,now) {
   // latch cannot suppress the beginning of the user's movement.
   const deliberateVisual=rawVisualDelta.confidence>0.11&&visualSpeed>0.028;
   const deliberateInertial=motionFresh&&accMag>0.30;
-  const deliberateAngular=Math.max(gyroMag,state.orientationRate)>0.060;
-  const deliberate=deliberateVisual||deliberateInertial||deliberateAngular;
+  const deliberate=deliberateVisual||deliberateInertial;
   if(deliberate){
     state.stationaryScore=Math.min(state.stationaryScore,0.12);
     state.stationary=false;state.stillSince=0;state.lastMoveAt=now;state.movementGate='MOVING';
@@ -577,10 +497,10 @@ function updatePose(rawVisualDelta,dt,now) {
       state.velocity.x=lerp(state.velocity.x,measured.x,0.62);
       state.velocity.y=lerp(state.velocity.y,measured.y,0.62);
       state.velocity.z=lerp(state.velocity.z,measured.z,0.62);
-    } else {
-      // Never invent position from browser acceleration when vision is weak.
-      // Holding the last visual position is far safer than an inertial free-run that becomes drift.
-      state.velocity.x*=0.55;state.velocity.y*=0.55;state.velocity.z*=0.55;
+    } else if(motionFresh&&now-state.lastMoveAt<180){
+      // Very short inertial bridge only; never let acceleration free-run into drift.
+      state.velocity.x+=a.x*dt*0.14;state.velocity.y+=a.y*dt*0.14;state.velocity.z+=a.z*dt*0.14;
+      state.position.x+=state.velocity.x*dt;state.position.y+=state.velocity.y*dt;state.position.z+=state.velocity.z*dt;
     }
   }
 
@@ -595,23 +515,20 @@ function updatePose(rawVisualDelta,dt,now) {
   state.lastPositionForDrift={...p};
 }
 
-function processVideoFrame(now,meta={}) {
+function processVideoFrame(now) {
   if(now-state.lastProcessAt<45)return;
   const dt=clamp((now-(state.lastProcessAt||now))/1000,0.01,0.12);state.lastProcessAt=now;
   const frame=captureGray();if(!frame)return;
-  const frameTime=Number.isFinite(meta.presentationTime)?meta.presentationTime:(Number.isFinite(meta.expectedDisplayTime)?meta.expectedDisplayTime:now);
-  if(state.previousFrame&&state.previousFrameTime){
+  const frameQ=nearestOrientation(now);
+  if(state.previousFrame&&state.previousFrameQ){
     const raw=qualityTracks(state.previousFrame,frame),rawFlow=raw.length?median(raw.map(t=>Math.hypot(t.observed.x,t.observed.y))):0;
     state.flowMagnitude=lerp(state.flowMagnitude,rawFlow,0.25);
-    if(state.stage==='fov_sync')estimateVideoImuTiming(raw,state.previousFrameTime,frameTime,frame.w,frame.h);
-    const prevQ=nearestOrientation(state.previousFrameTime-state.videoImuLagMs),frameQ=nearestOrientation(frameTime-state.videoImuLagMs);
-    if(state.stage==='fov_sync')estimateFovFromTracks(raw,prevQ,frameQ,frame.w,frame.h);
-    const solution=residualSolution(raw,prevQ,frameQ,frame.w,frame.h,state.fovX);
+    if(state.stage==='fov_sync')estimateFovFromTracks(raw,state.previousFrameQ,frameQ,frame.w,frame.h);
+    const solution=residualSolution(raw,state.previousFrameQ,frameQ,frame.w,frame.h,state.fovX);
     state.tracks=solution.inliers;state.validTracks=solution.inliers.length;state.visualConfidence=lerp(state.visualConfidence,solution.confidence,0.26);
-    const vv=estimateTranslation(solution,frame.w,frame.h,dt,frameQ,prevQ);state.translationSignal=vv;updatePose(vv,dt,now);
-    state.previousFrameQ=frameQ;
+    const vv=estimateTranslation(solution,frame.w,frame.h,dt,frameQ);state.translationSignal=vv;updatePose(vv,dt,now);
   }
-  state.previousFrame=frame;state.previousFrameTime=frameTime;state.frame=frame;
+  state.previousFrame=frame;state.previousFrameQ=frameQ;state.frame=frame;
   state.processCount++;
   if(now-state.processStamp>=1000){state.processedFps=state.processCount*1000/(now-state.processStamp);state.processCount=0;state.processStamp=now;}
 }
@@ -630,35 +547,18 @@ function originStability(now,dt) {
   if(quality>0.38){
     state.originQuaternionSamples.push(state.orientationQ);
     state.originAccelSamples.push({...state.accelDevice});
-    if(state.hasGravityAcceleration)state.originGravitySamples.push({q:{...state.orientationQ},a:{...state.accelGravityDevice}});
     if(state.originQuaternionSamples.length>120)state.originQuaternionSamples.shift();
     if(state.originAccelSamples.length>120)state.originAccelSamples.shift();
-    if(state.originGravitySamples.length>120)state.originGravitySamples.shift();
   }
   return quality;
 }
 function captureOrigin() {
-  const qSamples=state.originQuaternionSamples.slice(-80),aSamples=state.originAccelSamples.slice(-80),gSamples=state.originGravitySamples.slice(-80);
-  const averaged=qAverage(qSamples.length?qSamples:[state.orientationQ]);
-  // World Y is gravity-up; only the initial horizontal heading is zeroed.
-  // Pitch/roll are intentionally NOT baked into the world basis.
-  state.baseQ=qAxis(0,1,0,cameraHeadingAngle(averaged));
-  state.orientationCorrection=q();state.orientationHoldQ=null;
-  if(aSamples.length&&state.hasLinearAcceleration){state.accelBiasDevice={x:median(aSamples.map(a=>a.x)),y:median(aSamples.map(a=>a.y)),z:median(aSamples.map(a=>a.z))};}
-  if(gSamples.length){
-    const worldG=gSamples.map(s=>qRotate(rawRelativeQ(s.q),s.a));
-    state.gravityWorld={x:median(worldG.map(v=>v.x)),y:median(worldG.map(v=>v.y)),z:median(worldG.map(v=>v.z))};
+  const qSamples=state.originQuaternionSamples.slice(-80),aSamples=state.originAccelSamples.slice(-80);
+  state.baseQ=qAverage(qSamples.length?qSamples:[state.orientationQ]);
+  if(aSamples.length){
+    state.accelBiasDevice={x:median(aSamples.map(a=>a.x)),y:median(aSamples.map(a=>a.y)),z:median(aSamples.map(a=>a.z))};
   }
   state.previousFrameQ=state.orientationQ;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.originCaptured=true;state.worldRevision++;
-}
-function maintainWorldOrientationLock() {
-  if(!state.originCaptured||!state.baseQ)return;
-  const raw=rawRelativeQ(state.orientationQ),corrected=qNorm(qMul(state.orientationCorrection,raw));
-  const angular=Math.max(vecLength(state.gyro),state.orientationRate);
-  if(state.stationary&&angular<0.028){
-    if(!state.orientationHoldQ)state.orientationHoldQ=corrected;
-    else state.orientationCorrection=qNorm(qMul(state.orientationHoldQ,qInv(raw)));
-  } else state.orientationHoldQ=null;
 }
 
 function updateSetupGuidance(now,originQuality=0) {
@@ -667,10 +567,10 @@ function updateSetupGuidance(now,originQuality=0) {
     ui.stepDetail.textContent=state.stillScore>0.65?'Origin is averaging now—keep holding normally.':'Natural hand tremor is accepted; avoid deliberate movement.';
   } else if(state.stage==='fov_sync'){
     ui.stepTimer.textContent=`${Math.round(state.focalConfidence*100)}%`;
-    ui.stepDetail.textContent=`Turn left/right slowly. Camera↔IMU lag ${state.videoImuLagMs.toFixed(0)} ms • residual ${Number.isFinite(state.projectionError)?state.projectionError.toFixed(1)+' px':'—'}.`;
+    ui.stepDetail.textContent=`Turn left and right slowly. Projection residual ${Number.isFinite(state.projectionError)?state.projectionError.toFixed(1)+' px':'—'}.`;
   } else if(state.stage==='xyz_lock'){
-    ui.stepTimer.textContent=state.calib.metricCaptured?'SCALE LOCK':'0.50 m';
-    ui.stepDetail.textContent='Keep the same heading. Move the phone exactly 0.50 m (19.7 in) to your RIGHT in one smooth motion, then stop.';
+    ui.stepTimer.textContent=`${Math.round(state.scaleStability*100)}%`;
+    ui.stepDetail.textContent='Move in one small sideways arc, then stop. The camera-axis movement is converted into world XYZ.';
   } else if(state.stage==='settle_check'){
     const elapsed=state.stillSince?now-state.stillSince:0,remaining=Math.max(0,0.75-elapsed/1000);
     ui.stepTimer.textContent=state.stationary?`${remaining.toFixed(1)}s`:'WAITING';
@@ -682,7 +582,7 @@ function updateSetupGuidance(now,originQuality=0) {
 }
 
 function setupMachine(now) {
-  const dt=clamp((now-state.lastSetupAt)/1000,0,0.1);state.lastSetupAt=now;maintainWorldOrientationLock();
+  const dt=clamp((now-state.lastSetupAt)/1000,0,0.1);state.lastSetupAt=now;
   const motionFresh=now-state.lastMotionAt<500;
   if(state.stage==='hold_still'){
     const quality=originStability(now,dt);updateSetupGuidance(now,quality);
@@ -691,20 +591,20 @@ function setupMachine(now) {
     if((state.stillScore>=0.72||softTimeout)&&state.originQuaternionSamples.length>=10){
       captureOrigin();state.calibrationStartedAt=now;
       setStage('fov_sync','Origin captured at 0,0,0. Slowly look left and right so image motion can solve the visible camera FOV.',34);
-      state.poseReason='Gravity-level origin captured; solving camera projection and camera-to-IMU timing offset';
+      state.poseReason='Origin captured; solving the exact visible crop projection from rotation and image displacement';
     }
   } else if(state.stage==='fov_sync'){
     updateSetupGuidance(now);
-    if(state.focalConfidence>0.50&&state.timingConfidence>0.28&&state.fovSamples.length>=9&&state.projectionError<4.2){
+    if(state.focalConfidence>0.52&&state.fovSamples.length>=10&&state.projectionError<4.2){
       state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.calibrationStartedAt=now;
-      state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},rawVisualPosition:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false,metricCaptured:false};
-      setStage('xyz_lock','Projection and sensor timing are synchronized. Keep this heading, move the phone exactly 0.50 m (19.7 in) to your RIGHT, then stop.',64);
-      state.poseReason='Projection/timing synchronized; calibrating 0.50 m metric translation on gravity-level world X';
+      state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false};
+      setStage('xyz_lock','Projection is now driving the overlay. Make one small sideways arc, then stop, to qualify proportional XYZ movement.',64);
+      state.poseReason='Projection synchronized; qualifying translation scale and camera-to-world axis conversion';
     } else if(now-state.calibrationStartedAt>15000)state.poseReason='Projection needs slower rotation and visible contrast; continue left/right without translating';
   } else if(state.stage==='xyz_lock'){
     updateSetupGuidance(now);
-    const moved=state.calib.metricCaptured;
-    const qualified=moved&&state.visualConfidence>0.26&&state.validTracks>=8&&state.scaleStability>0.42&&state.motionConfidence>0.30;
+    const moved=state.calib.visualPath>0.035||vecLength(state.position)>0.025;
+    const qualified=moved&&state.visualConfidence>0.28&&state.validTracks>=8&&state.scaleStability>0.22&&state.motionConfidence>0.34;
     if(qualified&&state.stationary){
       state.scaleLocked=true;state.calibrationStartedAt=now;state.stillSince=now;
       setStage('settle_check','Translation has been connected to the same world transform. Hold naturally for the final no-creep check.',88);
@@ -716,7 +616,7 @@ function setupMachine(now) {
       state.velocity={x:0,y:0,z:0};
       setStage('locked','Synchronization basis qualified. A world-centered 360° 3D lattice is active; walk/lean to verify XYZ translation before saving.',100,'locked');
       ui.status.textContent='POSE LOCKED';ui.save.disabled=true;ui.stress.disabled=false;
-      state.poseReason='Gravity-level yaw basis, camera/IMU timing, epipolar translation direction, metric scale, and no-creep gates passed';
+      state.poseReason='Origin, visible FOV, world-axis translation, scale freeze, and no-creep gates passed';
     }
   } else if(state.stage==='revalidating'){
     updateSetupGuidance(now);
@@ -811,9 +711,6 @@ function updateUI() {
   ui.dProjectionError.textContent=Number.isFinite(state.projectionError)?`${state.projectionError.toFixed(2)} px`:'—';
   ui.dOriginQuality.textContent=`${Math.round(state.originQuality*100)}%`;ui.dGridMode.textContent=state.gridMode;
   if(ui.dVisualStep)ui.dVisualStep.textContent=state.visualStepMagnitude.toFixed(5);if(ui.dMoveGate)ui.dMoveGate.textContent=state.movementGate;
-  if(ui.dTiming)ui.dTiming.textContent=`${state.videoImuLagMs.toFixed(0)} ms (${Math.round(state.timingConfidence*100)}%)`;
-  if(ui.dWorldBasis)ui.dWorldBasis.textContent='gravity-level + start yaw';
-  if(ui.dDirection)ui.dDirection.textContent=`${Math.round(state.translationDirectionConfidence*100)}%`;
 }
 
 const STRESS_TESTS = [
@@ -889,33 +786,33 @@ function renderStressResults(){
   for(const item of r.results){const card=document.createElement('div');card.className='stressResult';card.dataset.pass=String(item.pass);const metricText=Object.entries(item.metrics||{}).map(([k,v])=>`${k}: ${typeof v==='number'&&Number.isFinite(v)?Number(v.toFixed(4)):v}`).join(' • ');card.innerHTML=`<header><b>${item.name}</b><strong>${item.pass?'PASS':'REVIEW'}</strong></header><small>${item.note||''}</small><small>${metricText}</small>`;ui.stressResults.appendChild(card);}
 }
 function showStressResults(){renderStressResults();if(!ui.stressDialog.open)ui.stressDialog.showModal();}
-function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v2-5.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v2-4.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 function renderLoop(now){setupMachine(now);updateStress(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
 function resize(){const r=grid.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);grid.width=Math.max(1,Math.round(r.width*d));grid.height=Math.max(1,Math.round(r.height*d));if(state.fovX)state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(r.height/Math.max(1,r.width)))/DEG;updateVisionCanvasSize();}
 
 function basisObject() {
   return {
-    version:2.5,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
-    axisConvention:{x:'right from starting heading',y:'gravity up',z:'backward from starting heading; camera looks toward -Z'},cameraSettings:state.trackSettings,
-    qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,videoImuLagMs:state.videoImuLagMs,timingConfidence:state.timingConfidence,translationDirectionConfidence:state.translationDirectionConfidence,imuHz:state.imuHz,videoHz:state.videoHz,stress:stressReportObject()},
-    note:'World Y is gravity-level, horizontal yaw is zeroed from the starting heading, and scale is calibrated from the 0.50 m translation step. Reload restores projection/timing/scale but, without persistent visual anchors, the current physical location becomes the reloaded origin.'
+    version:2.4,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
+    axisConvention:{x:'right',y:'up',z:'backward; camera looks toward -Z'},cameraSettings:state.trackSettings,
+    qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,imuHz:state.imuHz,videoHz:state.videoHz,stress:stressReportObject()},
+    note:'Reload restores the calibrated visible-camera projection and proportional scale. Without persistent real-world anchors, the current physical pose becomes the reloaded origin.'
   };
 }
-function saveBasis(){localStorage.setItem(STORAGE_KEY,JSON.stringify(basisObject()));state.basisSaved=true;ui.load.disabled=false;ui.instruction.textContent='Basis saved locally after the 3D walk-around test. Reload restores projection, timing, and metric scale, then establishes the current physical location as origin.';}
+function saveBasis(){localStorage.setItem(STORAGE_KEY,JSON.stringify(basisObject()));state.basisSaved=true;ui.load.disabled=false;ui.instruction.textContent='Basis saved locally after the 3D walk-around test. Reload restores projection and scale, then establishes the current physical pose as origin.';}
 function loadBasis(){
-  const raw=localStorage.getItem(STORAGE_KEY)||LEGACY_STORAGE_KEYS.map(k=>localStorage.getItem(k)).find(Boolean);if(!raw)return;
+  const raw=localStorage.getItem(STORAGE_KEY)||localStorage.getItem(LEGACY_STORAGE_KEY);if(!raw)return;
   try{
     resetStress(); ui.stress.disabled=true;
-    const b=JSON.parse(raw);if(Number(b.version)<2.5)throw new Error('This basis predates the gravity-level/metric tracking repair. Run the synchronization setup once to create a v2.5 basis.');
-    state.fovX=clamp(b.fovX||62,34,100);state.fovY=clamp(b.fovY||48,20,100);state.scale=clamp(b.scale||1,.1,20);state.scaleLocked=true;
-    state.scaleStability=b.qualification?.scaleStability||.5;state.projectionError=b.qualification?.projectionResidualPx??Infinity;state.videoImuLagMs=clamp(b.qualification?.videoImuLagMs??70,0,220);state.timingConfidence=b.qualification?.timingConfidence||0;
-    state.baseQ=qAxis(0,1,0,cameraHeadingAngle(state.orientationQ));state.orientationCorrection=q();state.orientationHoldQ=null;state.originCaptured=true;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.stillScore=0;state.stillSince=0;
+    const b=JSON.parse(raw);if(Number(b.version)<2.3)throw new Error('Older basis format; run the synchronization setup once.');
+    state.fovX=clamp(b.fovX||62,34,100);state.fovY=clamp(b.fovY||48,20,100);state.scale=clamp(b.scale||1,.1,12);state.scaleLocked=true;
+    state.scaleStability=b.qualification?.scaleStability||.5;state.projectionError=b.qualification?.projectionResidualPx??Infinity;
+    state.baseQ=state.orientationQ;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.stillScore=0;state.stillSince=0;
     setStage('revalidating','Saved projection and scale loaded. Hold normally while the current camera pose becomes the new origin.',94);
     ui.save.disabled=false;state.poseReason='Revalidating saved basis against current live camera and motion streams';
   }catch(err){ui.instruction.textContent=`Saved basis could not be loaded: ${err.message}`;}
 }
-function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-5.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-4.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 ui.start.addEventListener('click',requestPermissions);
 ui.stress.addEventListener('click',()=>{if(state.stress.active)manualAdvanceStress();else if(state.stress.complete)showStressResults();else startStressTest();});
