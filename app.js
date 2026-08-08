@@ -19,7 +19,7 @@ const ui = {
   dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), dTiming:$('#dTiming'), dWorldBasis:$('#dWorldBasis'), dDirection:$('#dDirection'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
 };
 
-const STORAGE_KEY = 'cruxtain.xyzAutoProfile.v3.1';
+const STORAGE_KEY = 'cruxtain.xyzAutoProfile.v3.2';
 const LEGACY_STORAGE_KEYS = ['cruxtain.xyzBasis.v2.5','cruxtain.xyzBasis.v2.4','cruxtain.xyzBasis.v2.3'];
 const PROFILE_SAVE_INTERVAL_MS = 4000;
 const DEG = Math.PI / 180;
@@ -246,7 +246,7 @@ function onMotion(e) {
 
 function loadAutomaticProfile(){
   try{
-    const p=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!p||Number(p.version)<3.1)return;
+    const p=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!p||Number(p.version)<3.2)return;
     // Camera geometry/timing are device properties and may seed a later session.
     // Metric scale is NOT reusable: every fresh monocular map owns a fresh internal gauge.
     if(Number.isFinite(p.fovX))state.fovX=clamp(p.fovX,34,105);
@@ -257,7 +257,7 @@ function loadAutomaticProfile(){
 }
 function saveAutomaticProfile(now=performance.now()){
   if(now-state.lastProfileSaveAt<PROFILE_SAVE_INTERVAL_MS)return;state.lastProfileSaveAt=now;
-  try{localStorage.setItem(STORAGE_KEY,JSON.stringify({version:3.1,savedAt:new Date().toISOString(),fovX:state.fovX,videoImuLagMs:state.videoImuLagMs,lastSolvedScale:state.scaleLocked?state.scale:null,focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence}));}catch{}
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify({version:3.2,savedAt:new Date().toISOString(),fovX:state.fovX,videoImuLagMs:state.videoImuLagMs,lastSolvedScale:state.scaleLocked?state.scale:null,focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence}));}catch{}
 }
 function initializeWorldFromCurrentOrientation(){
   if(state.originCaptured||!state.lastOrientationAt)return false;
@@ -629,6 +629,22 @@ function frameMapMatches(kf,frame,currQ){
   for(const seed of seeds){const p=seed.p,pred=predictedRotatedPixel(p,kf.q,currQ,fx,fy,w/2,h/2);if(!pred||pred.x<9||pred.y<9||pred.x>w-9||pred.y>h-9)continue;const t=trackPointSeeded(kf.frame.gray,frame.gray,w,h,p,pred,10);if(t.confidence<0.10||t.fb>3.2)continue;const d1=descriptorAt(kf.frame,p.x,p.y),d2=descriptorAt(frame,t.x,t.y);if(!d1||!d2||rmsDescriptorDistance(d1,d2)>0.72)continue;out.push({p,q:{x:t.x,y:t.y},descriptor:d2,confidence:t.confidence,landmarkHint:seed.landmarkHint});}
   return out;
 }
+function directTrackedMapMatches(kf,matches){
+  const out=[];
+  for(const mt of matches){
+    let lm=mt.landmarkHint||null;
+    if(!lm){let best=null,bestScore=Infinity;for(const cand of state.map.landmarks){const kp=cand.keyObs?.[kf.id];if(!kp)continue;const px=Math.hypot(kp.x-mt.p.x,kp.y-mt.p.y),dd=rmsDescriptorDistance(cand.descriptor,mt.descriptor);const score=px+dd*4;if(px<3.5&&dd<0.62&&score<bestScore){best=cand;bestScore=score;}}lm=best;}
+    if(lm)out.push({landmark:lm,pixel:{...mt.q},descriptorDistance:0});
+  }
+  return out;
+}
+function bootstrapTrackedPnP(kf,frame,camQ,matches,now){
+  const direct=directTrackedMapMatches(kf,matches);if(direct.length<4)return false;
+  const sol=mapPoseSolution(direct,frame,camQ);if(!sol||sol.inliers.length<4||sol.error>5.0)return false;
+  const ok=applyMapPose(sol,false,now,frame,camQ);if(ok)state.poseReason=`Direct keyframe PnP bootstrap: ${sol.inliers.length} inliers, ${sol.error.toFixed(1)} px`;
+  return ok;
+}
+
 function bootstrapTranslationDirection(kf,frame,currQ,matches){
   if(!kf||matches.length<10)return null;const raw=matches.map(mt=>({p:{...mt.p},q:{...mt.q},observed:{x:mt.q.x-mt.p.x,y:mt.q.y-mt.p.y},confidence:mt.confidence||1})),sol=residualSolution(raw,kf.q,currQ,frame.w,frame.h,state.fovX);
   if(sol.inliers.length<10)return null;const fit=solveTranslationDirection(sol,frame.w,frame.h,kf.q,currQ);if(!fit||fit.confidence<0.20)return null;const {fx,fy}=sol,cx=frame.w/2,cy=frame.h/2;
@@ -646,9 +662,15 @@ function buildPersistentMap(frame,camQ,now){
     // is never shown to the user, and is later converted to metres by the visual/IMU scale solve.
     state.position=vAdd(kf.pos,boot.direction);state.velocity={x:0,y:0,z:0};m.gaugeReady=true;m.lastAuthoritativeAt=now;m.lastAuthoritativePos={...state.position};m.lastSolvedPos={...state.position};m.bridgeAge=0;m.confidence=Math.max(m.confidence,0.14);state.poseReason=`Visual map gauge initialized automatically (${boot.inliers} epipolar inliers)`;
   }else{
-    if(now-m.lastAuthoritativeAt>180)return;const authoritativePos=m.lastSolvedPos||state.position,baselineGauge=posDist(kf.gaugePos,vScale(authoritativePos,1/Math.max(state.scale,1e-9)));if(baselineGauge<0.08&&rot<7*DEG&&m.sinceKeyframeVisual<0.012)return;
+    // Bootstrap must not deadlock while the landmark map is still only two-view qualified.
+    // Directly tracked keyframe correspondences are stronger than redetecting generic corners,
+    // so use them to obtain the next pose in the SAME visual gauge until normal map PnP matures.
+    if(now-m.lastAuthoritativeAt>120){bootstrapTrackedPnP(kf,frame,camQ,matches,now);}
+    const authorityAge=now-(m.lastAuthoritativeAt||0);
+    if(authorityAge>1400){state.poseReason='Map bootstrap is searching persistent landmarks; world origin is preserved';return;}
+    const authoritativePos=m.lastSolvedPos||state.position,baselineGauge=posDist(kf.gaugePos,vScale(authoritativePos,1/Math.max(state.scale,1e-9)));if(baselineGauge<0.06&&rot<7*DEG&&m.sinceKeyframeVisual<0.010)return;
   }
-  const currentPos=(m.lastSolvedPos&&now-m.lastAuthoritativeAt<180)?m.lastSolvedPos:state.position,baseline=posDist(kf.pos,currentPos),w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),created=[],currentKeyframeId=m.nextKeyframeId;
+  const currentPos=(m.lastSolvedPos&&now-m.lastAuthoritativeAt<650)?m.lastSolvedPos:state.position,baseline=posDist(kf.pos,currentPos),w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),created=[],currentKeyframeId=m.nextKeyframeId;
   if(baseline>Math.max(0.004,state.scale*0.004))for(const mt of matches){
     // First propagate identity through the shared keyframe pixel. This is much stronger than
     // rediscovering the same physical point from 3D proximity on every baseline.
@@ -779,7 +801,7 @@ function updatePose(rawVisualDelta,dt,now) {
 
 function processVideoFrame(now,meta={}) {
   if(now-state.lastProcessAt<42)return;const dt=clamp((now-(state.lastProcessAt||now))/1000,0.01,0.12);state.lastProcessAt=now;
-  const frame=captureGray();if(!frame)return;const frameTime=Number.isFinite(meta.presentationTime)?meta.presentationTime:(Number.isFinite(meta.expectedDisplayTime)?meta.expectedDisplayTime:now);frame.time=frameTime;frame.imuTime=frameTime-state.videoImuLagMs;
+  const frame=captureGray();if(!frame)return;state.lastFrameAt=now;const frameTime=Number.isFinite(meta.presentationTime)?meta.presentationTime:(Number.isFinite(meta.expectedDisplayTime)?meta.expectedDisplayTime:now);frame.time=frameTime;frame.imuTime=frameTime-state.videoImuLagMs;
   if(!state.originCaptured)initializeWorldFromCurrentOrientation();
   if(state.previousFrame&&state.previousFrameTime){
     const raw=qualityTracks(state.previousFrame,frame),rawFlow=raw.length?median(raw.map(t=>Math.hypot(t.observed.x,t.observed.y))):0;state.flowMagnitude=lerp(state.flowMagnitude,rawFlow,0.25);
@@ -808,9 +830,11 @@ function trackingMachine(now){
   maintainWorldOrientationLock();if(state.stage!=='tracking')return;if(!state.originCaptured)initializeWorldFromCurrentOrientation();saveAutomaticProfile(now);const m=state.map,locked=worldMetricAuthoritative(now);
   const profileQuality=0.16*state.visualConfidence+0.14*state.motionConfidence+0.30*state.scaleStability+0.40*m.confidence,quality=clamp(profileQuality,0,1);ui.progress.style.width=`${Math.round(quality*100)}%`;
   if(!state.originCaptured){ui.status.textContent='SENSORS STARTING';ui.status.dataset.state='calibrating';ui.stepTimer.textContent='AUTO';ui.stepDetail.textContent='Waiting for the first orientation sample; no action is required.';state.poseReason='Waiting for first orientation sample';state.gridMode='self-initializing';return;}
-  if(locked){ui.status.textContent='WORLD LOCKED';ui.status.dataset.state='locked';state.gridMode='metric world';}
-  else if(m.gaugeReady&&now-m.lastAuthoritativeAt>420){ui.status.textContent='RELOCALIZING';ui.status.dataset.state='lost';state.gridMode=state.scaleLocked?'world held':'self-initializing';}
-  else{ui.status.textContent='AUTO INITIALIZING';ui.status.dataset.state='calibrating';state.gridMode='self-initializing';}
+  if(state.stream&&state.lastFrameAt&&now-state.lastFrameAt>1600){ui.status.textContent='CAMERA STALLED';ui.status.dataset.state='lost';state.gridMode=m.gaugeReady?'visual map':'orientation world';state.poseReason='Camera frames stopped arriving; tracking state is preserved';}
+  else if(locked){ui.status.textContent='WORLD LOCKED';ui.status.dataset.state='locked';state.gridMode='metric world';}
+  else if(m.gaugeReady&&now-m.lastAuthoritativeAt>650){ui.status.textContent='RELOCALIZING';ui.status.dataset.state='lost';state.gridMode=state.scaleLocked?'world held':'visual map';}
+  else if(m.gaugeReady){ui.status.textContent='MAP TRACKING';ui.status.dataset.state='calibrating';state.gridMode=state.scaleLocked?'metric settling':'visual map';}
+  else{ui.status.textContent='AUTO INITIALIZING';ui.status.dataset.state='calibrating';state.gridMode='orientation world';}
   ui.stepLabel.textContent='ZERO-SETUP WORLD LOCK';ui.stepTimer.textContent='LIVE';ui.stepDetail.textContent=`${m.landmarks.length} landmarks • ${m.confirmed} confirmed • ${m.poseInliers} PnP inliers • metric ${Math.round(state.scaleStability*100)}% • loops ${m.loopClosures}`;
   ui.instruction.textContent='Use the phone normally. World mapping, metric scale, drift repair, and relocalization happen automatically; no calibration motion is required.';
 }
@@ -874,12 +898,17 @@ function drawLattice(camQ,camPos,fx,fy,cx,cy,full) {
 function drawGrid() {
   const dpr=Math.min(devicePixelRatio||1,2),rect=grid.getBoundingClientRect();if(grid.width!==Math.round(rect.width*dpr)||grid.height!==Math.round(rect.height*dpr))resize();
   const W=rect.width,H=rect.height;gctx.setTransform(dpr,0,0,dpr,0,0);gctx.clearRect(0,0,W,H);const fx=.5*W/Math.tan(state.fovX*DEG/2),fy=.5*H/Math.tan(state.fovY*DEG/2),cx=W/2,cy=H/2,camQ=relativeCameraQ(),camPos=state.position;
-  if(state.stage==='tracking'&&state.originCaptured&&worldMetricAuthoritative()&&performance.now()>=state.map.suppressRenderUntil)drawLattice(camQ,camPos,fx,fy,cx,cy,true);else drawOriginReticle(W,H);
+  if(state.stage==='tracking'&&state.originCaptured&&performance.now()>=state.map.suppressRenderUntil){
+    // The lattice is visible immediately so the user can verify world orientation and then
+    // translation as the map comes online. Before metric lock it is an INTERNAL visual lattice,
+    // never presented as metres; after metric authority it becomes the fixed metric lattice.
+    drawLattice(camQ,camPos,fx,fy,cx,cy,worldMetricAuthoritative());
+  }else drawOriginReticle(W,H);
   gctx.fillStyle='rgba(255,255,255,.78)';gctx.font='11px system-ui';gctx.fillText(`HFOV ${state.fovX.toFixed(1)}° • landmarks ${state.map.landmarks.length} • map inliers ${state.map.poseInliers}`,12,H-14);
 }
 
 function updateUI() {
-  const metricReady=state.scaleLocked&&state.map.gaugeReady;ui.x.textContent=metricReady?state.position.x.toFixed(3):'—';ui.y.textContent=metricReady?state.position.y.toFixed(3):'—';ui.z.textContent=metricReady?state.position.z.toFixed(3):'—';ui.gridMode.textContent=state.gridMode.toUpperCase();
+  const metricReady=state.scaleLocked&&state.map.gaugeReady,visualReady=state.map.gaugeReady;ui.x.textContent=metricReady?state.position.x.toFixed(3):visualReady?`${state.position.x.toFixed(3)}u`:'0.000';ui.y.textContent=metricReady?state.position.y.toFixed(3):visualReady?`${state.position.y.toFixed(3)}u`:'0.000';ui.z.textContent=metricReady?state.position.z.toFixed(3):visualReady?`${state.position.z.toFixed(3)}u`:'0.000';ui.gridMode.textContent=state.gridMode.toUpperCase();
   ui.dState.textContent=state.stage;ui.dFov.textContent=`${state.fovX.toFixed(1)}° × ${state.fovY.toFixed(1)}°`;ui.dVisual.textContent=`${Math.round(state.visualConfidence*100)}%`;ui.dMotion.textContent=`${Math.round(state.motionConfidence*100)}%`;
   ui.dStill.textContent=state.stationary?`yes ${Math.round(state.stationaryScore*100)}%`:`no ${Math.round(state.stationaryScore*100)}%`;ui.dFps.textContent=state.processedFps.toFixed(1);ui.dScale.textContent=state.scaleLocked?`${state.scale.toFixed(3)} m/u • LOCKED`:`AUTO • ${Math.round(state.scaleStability*100)}%`;
   ui.dQuality.textContent=worldMetricAuthoritative()?'metric map locked':state.map.gaugeReady?'visual map initializing':state.visualConfidence>.12?'visual bootstrap':'weak';ui.dTracks.textContent=String(state.validTracks);ui.dDrift.textContent=`${state.driftRate.toFixed(4)} m/s`;
@@ -961,12 +990,12 @@ function renderStressResults(){
   for(const item of r.results){const card=document.createElement('div');card.className='stressResult';card.dataset.pass=String(item.pass);const metricText=Object.entries(item.metrics||{}).map(([k,v])=>`${k}: ${typeof v==='number'&&Number.isFinite(v)?Number(v.toFixed(4)):v}`).join(' • ');card.innerHTML=`<header><b>${item.name}</b><strong>${item.pass?'PASS':'REVIEW'}</strong></header><small>${item.note||''}</small><small>${metricText}</small>`;ui.stressResults.appendChild(card);}
 }
 function showStressResults(){renderStressResults();if(!ui.stressDialog.open)ui.stressDialog.showModal();}
-function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v3-1.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v3-2.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 function renderLoop(now){trackingMachine(now);updateStress(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
 function resize(){const r=grid.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);grid.width=Math.max(1,Math.round(r.width*d));grid.height=Math.max(1,Math.round(r.height*d));if(state.fovX)state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(r.height/Math.max(1,r.width)))/DEG;updateVisionCanvasSize();}
 
-function basisObject(){return{version:3.1,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,axisConvention:{x:'right from startup heading',y:'gravity up',z:'backward from startup heading; camera looks toward -Z'},cameraSettings:state.trackSettings,automatic:{focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence,videoImuLagMs:state.videoImuLagMs,scaleStability:state.scaleStability,scaleUpdates:state.metric.automaticUpdates,scaleSolve:state.metric.lastScaleSolve,mapGaugeReady:state.map.gaugeReady,confirmedLandmarks:state.map.confirmed,mapLandmarks:state.map.landmarks.length,mapInliers:state.map.poseInliers,mapConfidence:state.map.confidence,relocalizations:state.map.relocalizations,loopClosures:state.map.loopClosures,mapReprojectionErrorPx:state.map.reprojectionError},stress:stressReportObject(),note:'Zero-setup map-authoritative tracker: startup origin is automatic; a private monocular visual gauge bootstraps itself; metric scale is solved per session from visual keyframes plus IMU preintegration; persistent landmarks/PnP and consensus loop closure repair drift.'};}
+function basisObject(){return{version:3.2,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,axisConvention:{x:'right from startup heading',y:'gravity up',z:'backward from startup heading; camera looks toward -Z'},cameraSettings:state.trackSettings,automatic:{focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence,videoImuLagMs:state.videoImuLagMs,scaleStability:state.scaleStability,scaleUpdates:state.metric.automaticUpdates,scaleSolve:state.metric.lastScaleSolve,mapGaugeReady:state.map.gaugeReady,confirmedLandmarks:state.map.confirmed,mapLandmarks:state.map.landmarks.length,mapInliers:state.map.poseInliers,mapConfidence:state.map.confidence,relocalizations:state.map.relocalizations,loopClosures:state.map.loopClosures,mapReprojectionErrorPx:state.map.reprojectionError},stress:stressReportObject(),note:'Zero-setup map-authoritative tracker: startup origin is automatic; a private monocular visual gauge bootstraps itself; metric scale is solved per session from visual keyframes plus IMU preintegration; persistent landmarks/PnP and consensus loop closure repair drift.'};}
 function saveBasis(){saveAutomaticProfile(1e12);state.basisSaved=true;ui.instruction.textContent='Automatic device profile saved. No calibration sequence is required.';}
 function loadBasis(){loadAutomaticProfile();ui.instruction.textContent='Automatic device profile refreshed. Tracking and the current map continue without a setup sequence.';}
 function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-auto-v3-1.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
