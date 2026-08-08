@@ -19,8 +19,9 @@ const ui = {
   dOriginQuality: $('#dOriginQuality'), dGridMode: $('#dGridMode'), dVisualStep: $('#dVisualStep'), dMoveGate: $('#dMoveGate'), dTiming:$('#dTiming'), dWorldBasis:$('#dWorldBasis'), dDirection:$('#dDirection'), stepLabel: $('#stepLabel'), stepDetail: $('#stepDetail'), stepTimer: $('#stepTimer')
 };
 
-const STORAGE_KEY = 'cruxtain.xyzBasis.v2.5';
-const LEGACY_STORAGE_KEYS = ['cruxtain.xyzBasis.v2.4','cruxtain.xyzBasis.v2.3'];
+const STORAGE_KEY = 'cruxtain.xyzAutoProfile.v3.0';
+const LEGACY_STORAGE_KEYS = ['cruxtain.xyzBasis.v2.5','cruxtain.xyzBasis.v2.4','cruxtain.xyzBasis.v2.3'];
+const PROFILE_SAVE_INTERVAL_MS = 4000;
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -72,12 +73,13 @@ function qFromEulerYXZ(beta, alpha, negGamma) {
     c2*c1*c3 + s2*s1*s3
   );
 }
-function deviceCameraQuaternion(alpha, beta, gamma) {
-  let out = qFromEulerYXZ(beta*DEG, alpha*DEG, -gamma*DEG);
-  out = qMul(out, qAxis(1,0,0,-Math.PI/2));
-  const screenAngle = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * DEG;
-  out = qMul(out, qAxis(0,0,1,-screenAngle));
-  return qNorm(out);
+function deviceMotionQuaternion(alpha,beta,gamma){
+  // Maps the DeviceMotion standard-orientation XYZ frame into our Y-up world.
+  // Screen rotation is intentionally excluded: DeviceMotion axes do not rotate with UI orientation.
+  let out=qFromEulerYXZ(beta*DEG,alpha*DEG,-gamma*DEG);out=qMul(out,qAxis(1,0,0,-Math.PI/2));return qNorm(out);
+}
+function deviceCameraQuaternion(alpha,beta,gamma){
+  let out=deviceMotionQuaternion(alpha,beta,gamma);const screenAngle=((screen.orientation&&screen.orientation.angle)||window.orientation||0)*DEG;out=qMul(out,qAxis(0,0,1,-screenAngle));return qNorm(out);
 }
 function qDeltaVector(prev, curr) {
   let d = qNorm(qMul(qInv(prev), curr));
@@ -122,52 +124,51 @@ function relativeQ(absQ) {
   return state.orientationCorrection ? qNorm(qMul(state.orientationCorrection,raw)) : raw;
 }
 function relativeCameraQ() { return relativeQ(state.orientationQ); }
+function relativeMotionQ(){if(!state.baseQ)return state.motionQ;const raw=qNorm(qMul(qInv(state.baseQ),state.motionQ));return state.orientationCorrection?qNorm(qMul(state.orientationCorrection,raw)):raw;}
 
 const state = {
   stage: 'idle', stream: null, trackSettings: {},
-  orientationQ: q(), baseQ: null, orientationCorrection:q(), orientationHoldQ:null, previousFrameQ: null, previousFrameTime:0, orientationSamples: [], lastOrientationAt: 0, orientationRate: 0,
-  gyro: {x:0,y:0,z:0}, accelDevice: {x:0,y:0,z:0}, accelGravityDevice:{x:0,y:0,z:0}, accelWorld: {x:0,y:0,z:0}, accelBiasDevice: {x:0,y:0,z:0}, gravityWorld:{x:0,y:-9.80665,z:0}, hasLinearAcceleration:false, hasGravityAcceleration:false,
-  position: {x:0,y:0,z:0}, velocity: {x:0,y:0,z:0},
-  fovX: 62, fovY: 48, fovSamples: [], focalConfidence: 0, projectionError: Infinity, videoImuLagMs:70, timingSamples:[], timingConfidence:0,
-  scale: 1, scaleStability: 0, scaleSamples: [], scaleLocked: false,
-  visualConfidence: 0, motionConfidence: 0, stationary: false, stationaryScore: 0, stillSince: 0, stillScore: 0, originQuality: 0,
-  originQuaternionSamples: [], originAccelSamples: [], originGravitySamples:[], originCaptured: false,
-  lastMotionAt: 0, lastFrameAt: 0, calibrationStartedAt: 0, lastSetupAt: performance.now(),
-  imuCount: 0, imuHz: 0, imuStamp: performance.now(), videoCount: 0, videoHz: 0, videoStamp: performance.now(),
-  processedFps: 0, processCount: 0, processStamp: performance.now(),
-  frame: null, previousFrame: null, tracks: [], validTracks: 0, flowMagnitude: 0,
-  translationSignal: {x:0,y:0,z:0,confidence:0,rawMagnitude:0}, visualStepMagnitude:0, movementGate:'still', lastMoveAt:0, driftRate: 0, lastPositionForDrift: {x:0,y:0,z:0},
-  poseReason: 'Not started', loopStarted: false, lastProcessAt: 0, basisSaved: false, stageEnteredAt: performance.now(),
-  calib: { visualPath:0, inertialPath:0, inertialVelocity:{x:0,y:0,z:0}, rawVisualPosition:{x:0,y:0,z:0}, lastPosition:{x:0,y:0,z:0}, motionSeen:false, metricCaptured:false },
-  gridMode: 'off', worldRevision: 0, translationDirectionConfidence:0,
-  stress: {active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false}
+  orientationQ: q(), motionQ:q(), baseQ: null, orientationCorrection:q(), orientationHoldQ:null, previousFrameQ:null, previousFrameTime:0, orientationSamples:[], lastOrientationAt:0, orientationRate:0,
+  gyro:{x:0,y:0,z:0}, accelDevice:{x:0,y:0,z:0}, accelGravityDevice:{x:0,y:0,z:0}, accelWorld:{x:0,y:0,z:0}, frameAccelWorld:{x:0,y:0,z:0}, accelSamples:[], accelBiasDevice:{x:0,y:0,z:0}, gravityWorld:{x:0,y:9.80665,z:0}, hasLinearAcceleration:false, hasGravityAcceleration:false,
+  position:{x:0,y:0,z:0}, velocity:{x:0,y:0,z:0},
+  fovX:62, fovY:48, fovSamples:[], focalConfidence:0, projectionError:Infinity, videoImuLagMs:85, timingSamples:[], timingConfidence:0,
+  scale:1, scaleStability:0, scaleSamples:[], scaleLocked:false,
+  visualConfidence:0, motionConfidence:0, stationary:false, stationaryScore:0, stillSince:0, stillScore:0, originQuality:0,
+  originCaptured:false, biasSamples:[], gravitySamples:[],
+  lastMotionAt:0, lastFrameAt:0, lastSetupAt:performance.now(), lastProfileSaveAt:0,
+  imuCount:0, imuHz:0, imuStamp:performance.now(), videoCount:0, videoHz:0, videoStamp:performance.now(),
+  processedFps:0, processCount:0, processStamp:performance.now(),
+  frame:null, previousFrame:null, tracks:[], validTracks:0, flowMagnitude:0,
+  translationSignal:{x:0,y:0,z:0,confidence:0,rawMagnitude:0}, visualStepMagnitude:0, movementGate:'initializing', lastMoveAt:0, driftRate:0, lastPositionForDrift:{x:0,y:0,z:0},
+  poseReason:'Waiting for permissions', loopStarted:false, lastProcessAt:0, basisSaved:false, stageEnteredAt:performance.now(),
+  gridMode:'off', worldRevision:0, translationDirectionConfidence:0,
+  metric:{rawPosition:{x:0,y:0,z:0},rawVelocity:{x:0,y:0,z:0},lastRawVelocity:null,mapGaugePosition:null,mapGaugeVelocity:{x:0,y:0,z:0},lastMapGaugeVelocity:null,scaleCandidates:[],motionWindow:null,lastImuAt:0,lastVisualAt:0,automaticUpdates:0},
+  map:{keyframes:[],landmarks:[],nextKeyframeId:1,nextLandmarkId:1,lastKeyframeId:null,sinceKeyframeVisual:0,poseInliers:0,reprojectionError:Infinity,confidence:0,relocalizations:0,loopClosures:0,lastRelocalizeAt:0,lastMapBuildAt:0,lastPoseAt:0,lastCorrection:0},
+  stress:{active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false}
 };
 
-function setStage(stage, text, progress, pill = 'calibrating') {
-  state.stage = stage;
-  state.stageEnteredAt = performance.now();
-  ui.instruction.textContent = text;
-  ui.progress.style.width = `${progress}%`;
-  ui.status.textContent = stage.replaceAll('_', ' ').toUpperCase();
-  ui.status.dataset.state = pill;
-  const labels={hold_still:'STEP 1 OF 4',fov_sync:'STEP 2 OF 4',xyz_lock:'STEP 3 OF 4',settle_check:'STEP 4 OF 4',locked:'3D TEST',revalidating:'REVALIDATING',idle:'READY'};
-  ui.stepLabel.textContent=labels[stage]||stage.toUpperCase();
-  ui.stepDetail.textContent=text;
-  state.gridMode = stage==='locked' ? '3D lattice' : stage==='settle_check' ? '3D preview' : stage==='fov_sync' ? 'projection tunnel' : stage==='xyz_lock' ? 'translation cage' : 'origin reticle';
+function setStage(stage, text, progress=100, pill='calibrating') {
+  state.stage=stage;state.stageEnteredAt=performance.now();
+  ui.instruction.textContent=text;ui.progress.style.width=`${clamp(progress,0,100)}%`;
+  ui.status.textContent=stage==='tracking'?'AUTO TRACKING':stage.replaceAll('_',' ').toUpperCase();ui.status.dataset.state=pill;
+  ui.stepLabel.textContent=stage==='tracking'?'ZERO-SETUP WORLD LOCK':stage.toUpperCase();ui.stepDetail.textContent=text;ui.stepTimer.textContent=stage==='tracking'?'LIVE':'—';
+  state.gridMode=stage==='tracking'?'persistent 3D lattice':'off';
 }
 
 async function requestPermissions() {
   ui.start.disabled = true;
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser does not expose camera capture.');
-    if (typeof window.DeviceMotionEvent?.requestPermission === 'function') {
-      const r = await window.DeviceMotionEvent.requestPermission();
-      if (r !== 'granted') throw new Error('Motion permission was not granted.');
-    }
-    if (typeof window.DeviceOrientationEvent?.requestPermission === 'function') {
-      const r = await window.DeviceOrientationEvent.requestPermission();
-      if (r !== 'granted') throw new Error('Orientation permission was not granted.');
-    }
+    // Start every sensor permission request inside the original tap. On browsers that
+    // require transient user activation (notably iOS), awaiting one prompt before
+    // requesting the next can lose the activation and make the second request fail.
+    const permissionRequests=[];
+    if (typeof window.DeviceMotionEvent?.requestPermission === 'function')
+      permissionRequests.push(window.DeviceMotionEvent.requestPermission().then(r=>['motion',r]));
+    if (typeof window.DeviceOrientationEvent?.requestPermission === 'function')
+      permissionRequests.push(window.DeviceOrientationEvent.requestPermission().then(r=>['orientation',r]));
+    const permissionResults=await Promise.all(permissionRequests);
+    for(const [kind,result] of permissionResults)if(result!=='granted')throw new Error(`${kind==='motion'?'Motion':'Orientation'} permission was not granted.`);
 
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode:{exact:'environment'}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30,min:24,max:30} }, audio:false
@@ -186,9 +187,9 @@ async function requestPermissions() {
 
     ui.startCard.hidden = true;
     ui.reset.disabled = false;
-    ui.load.disabled = !(localStorage.getItem(STORAGE_KEY) || LEGACY_STORAGE_KEYS.some(k=>localStorage.getItem(k)));
+    if(ui.load)ui.load.disabled=true;
     resize();
-    beginSetup();
+    beginTracking();
     startVideoLoop();
     if (!state.loopStarted) { state.loopStarted = true; requestAnimationFrame(renderLoop); }
   } catch (err) {
@@ -199,70 +200,85 @@ async function requestPermissions() {
 }
 
 function onVisibility() {
-  if (document.hidden) {
-    state.velocity={x:0,y:0,z:0};
-    state.poseReason='Paused while page is hidden';
-  } else if (state.stage==='locked') {
-    setStage('revalidating','Hold normally for a moment while the live sensor timing is revalidated…',94);
-    state.stillSince=0; state.stillScore=0;
-  }
+  if(document.hidden){state.velocity={x:0,y:0,z:0};state.poseReason='Paused while page is hidden';return;}
+  state.previousFrame=null;state.previousFrameTime=0;state.metric.lastImuAt=0;
+  state.poseReason='Live streams resumed; map relocalization will correct the pose automatically';
 }
 
 function onOrientation(e) {
   if (e.alpha == null || e.beta == null || e.gamma == null) return;
   const now=performance.now();
-  const next=deviceCameraQuaternion(e.alpha,e.beta,e.gamma);
+  const motionNext=deviceMotionQuaternion(e.alpha,e.beta,e.gamma),next=deviceCameraQuaternion(e.alpha,e.beta,e.gamma);
   if(state.lastOrientationAt){
     const dt=Math.max((now-state.lastOrientationAt)/1000,1e-3);
     state.orientationRate=qAngle(state.orientationQ,next)/dt;
   }
-  state.orientationQ=next; state.lastOrientationAt=now;
+  state.motionQ=motionNext;state.orientationQ=next; state.lastOrientationAt=now;
   state.orientationSamples.push({t:now,q:next});
-  while(state.orientationSamples.length>180||(state.orientationSamples[0]&&now-state.orientationSamples[0].t>3500))state.orientationSamples.shift();
+  while(state.orientationSamples.length>240||(state.orientationSamples[0]&&now-state.orientationSamples[0].t>5000))state.orientationSamples.shift();
+  if(state.stage==='tracking'&&!state.originCaptured)initializeWorldFromCurrentOrientation();
 }
 
 function onMotion(e) {
-  const now=performance.now();
-  const rr=e.rotationRate||{};
-  // DeviceMotion rotation-rate axes share the physical phone frame used by the camera.
+  const now=performance.now(),rr=e.rotationRate||{};
   state.gyro={x:(rr.alpha||0)*DEG,y:(rr.beta||0)*DEG,z:(rr.gamma||0)*DEG};
   const a=e.acceleration||{},ag=e.accelerationIncludingGravity||{};
   const hasLinear=[a.x,a.y,a.z].every(Number.isFinite),hasGravity=[ag.x,ag.y,ag.z].every(Number.isFinite);
   state.hasLinearAcceleration=state.hasLinearAcceleration||hasLinear;state.hasGravityAcceleration=state.hasGravityAcceleration||hasGravity;
   if(hasGravity)state.accelGravityDevice={x:ag.x,y:ag.y,z:ag.z};
-  const rot=state.baseQ?relativeCameraQ():state.orientationQ;
+  if(hasLinear)state.accelDevice={x:a.x,y:a.y,z:a.z};
+  const rot=state.baseQ?relativeMotionQ():state.motionQ;
   if(hasLinear){
-    state.accelDevice={x:a.x,y:a.y,z:a.z};
     const corrected={x:state.accelDevice.x-state.accelBiasDevice.x,y:state.accelDevice.y-state.accelBiasDevice.y,z:state.accelDevice.z-state.accelBiasDevice.z};
     state.accelWorld=qRotate(rot,corrected);
-  } else if(hasGravity){
-    if(!state.baseQ){
-      // Before the gravity vector is calibrated, do not let gravity masquerade as motion.
-      state.accelWorld={x:0,y:0,z:0};
-    } else {
-      const worldRaw=qRotate(rot,state.accelGravityDevice);
-      // The gravity vector is measured at origin in the actual browser sign convention.
-      state.accelWorld={x:worldRaw.x-state.gravityWorld.x,y:worldRaw.y-state.gravityWorld.y,z:worldRaw.z-state.gravityWorld.z};
+  }else if(hasGravity&&state.originCaptured){
+    const worldRaw=qRotate(rot,state.accelGravityDevice);
+    state.accelWorld={x:worldRaw.x-state.gravityWorld.x,y:worldRaw.y-state.gravityWorld.y,z:worldRaw.z-state.gravityWorld.z};
+  }else state.accelWorld={x:0,y:0,z:0};
+  state.accelSamples.push({t:now,a:{...state.accelWorld}});while(state.accelSamples.length>360||(state.accelSamples[0]&&now-state.accelSamples[0].t>6000))state.accelSamples.shift();
+
+  // Short-window preintegration is used only to identify metric scale. It never free-runs XYZ.
+  const m=state.metric,dt=m.lastImuAt?clamp((now-m.lastImuAt)/1000,0,0.05):0;m.lastImuAt=now;
+  if(dt>0&&state.originCaptured){
+    const aw=state.accelWorld;
+    if(m.motionWindow){
+      const w=m.motionWindow;
+      w.dp.x+=w.v.x*dt+0.5*aw.x*dt*dt;w.dp.y+=w.v.y*dt+0.5*aw.y*dt*dt;w.dp.z+=w.v.z*dt+0.5*aw.z*dt*dt;
+      w.v.x+=aw.x*dt;w.v.y+=aw.y*dt;w.v.z+=aw.z*dt;w.imuTime+=dt;
     }
   }
-  state.lastMotionAt=now;
-  state.imuCount++;
+  state.lastMotionAt=now;state.imuCount++;
   if(now-state.imuStamp>=1000){state.imuHz=state.imuCount*1000/(now-state.imuStamp);state.imuCount=0;state.imuStamp=now;}
 }
 
-function beginSetup() {
-  state.position={x:0,y:0,z:0}; state.velocity={x:0,y:0,z:0};
-  state.baseQ=null; state.orientationCorrection=q(); state.orientationHoldQ=null; state.previousFrameQ=null; state.previousFrameTime=0; state.previousFrame=null; state.frame=null; state.tracks=[];
-  state.fovSamples=[]; state.timingSamples=[]; state.videoImuLagMs=70; state.timingConfidence=0; state.scaleSamples=[]; state.scale=1; state.scaleLocked=false;
-  state.focalConfidence=0; state.projectionError=Infinity; state.visualConfidence=0; state.motionConfidence=0; state.scaleStability=0;
-  state.validTracks=0; state.flowMagnitude=0; state.stationaryScore=0; state.stillSince=0; state.stillScore=0; state.originQuality=0; state.driftRate=0; state.lastPositionForDrift={x:0,y:0,z:0}; state.translationDirectionConfidence=0;
-  state.originQuaternionSamples=[]; state.originAccelSamples=[]; state.originGravitySamples=[]; state.originCaptured=false;
-  state.accelBiasDevice={x:0,y:0,z:0}; state.gravityWorld={x:0,y:-9.80665,z:0}; state.hasLinearAcceleration=false; state.hasGravityAcceleration=false; state.calibrationStartedAt=performance.now(); state.lastSetupAt=performance.now();
-  state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},rawVisualPosition:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false,metricCaptured:false};
-  state.poseReason='Collecting a gravity-level origin; natural hand tremor is allowed';
-  resetStress();
-  ui.save.disabled=true; ui.stress.disabled=true;
-  setStage('hold_still','Hold the phone normally. The origin uses a rolling average and does not require tripod-level stillness.',10);
+function loadAutomaticProfile(){
+  try{
+    const p=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!p||Number(p.version)<3)return;
+    if(Number.isFinite(p.fovX))state.fovX=clamp(p.fovX,34,105);
+    if(Number.isFinite(p.videoImuLagMs))state.videoImuLagMs=clamp(p.videoImuLagMs,0,220);
+    if(Number.isFinite(p.scale)&&p.scale>0.05&&p.scale<30){state.scale=p.scale;state.scaleStability=clamp(p.scaleStability||0.45,0,1);state.scaleLocked=state.scaleStability>0.70;}
+    state.focalConfidence=clamp(p.focalConfidence||0.25,0,1);state.timingConfidence=clamp(p.timingConfidence||0.20,0,1);
+  }catch{}
+}
+function saveAutomaticProfile(now=performance.now()){
+  if(now-state.lastProfileSaveAt<PROFILE_SAVE_INTERVAL_MS)return;state.lastProfileSaveAt=now;
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify({version:3,savedAt:new Date().toISOString(),fovX:state.fovX,videoImuLagMs:state.videoImuLagMs,scale:state.scale,scaleStability:state.scaleStability,focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence}));}catch{}
+}
+function initializeWorldFromCurrentOrientation(){
+  if(state.originCaptured||!state.lastOrientationAt)return false;
+  state.baseQ=qAxis(0,1,0,cameraHeadingAngle(state.orientationQ));state.orientationCorrection=q();state.orientationHoldQ=null;state.originCaptured=true;state.worldRevision++;
+  state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.metric.rawPosition={x:0,y:0,z:0};state.metric.rawVelocity={x:0,y:0,z:0};
+  state.originQuality=1;state.poseReason='World initialized automatically; learning map, timing, bias, and scale during normal movement';
+  return true;
+}
+function beginTracking(){
+  state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.baseQ=null;state.orientationCorrection=q();state.orientationHoldQ=null;state.previousFrameQ=null;state.previousFrameTime=0;state.previousFrame=null;state.frame=null;state.tracks=[];
+  state.visualConfidence=0;state.motionConfidence=0;state.stationary=false;state.stationaryScore=0;state.stillSince=0;state.originCaptured=false;state.originQuality=0;state.biasSamples=[];state.gravitySamples=[];state.accelSamples=[];state.frameAccelWorld={x:0,y:0,z:0};state.validTracks=0;state.flowMagnitude=0;state.driftRate=0;state.lastPositionForDrift={x:0,y:0,z:0};state.translationDirectionConfidence=0;
+  state.metric={rawPosition:{x:0,y:0,z:0},rawVelocity:{x:0,y:0,z:0},lastRawVelocity:null,mapGaugePosition:null,mapGaugeVelocity:{x:0,y:0,z:0},lastMapGaugeVelocity:null,scaleCandidates:[],motionWindow:null,lastImuAt:0,lastVisualAt:0,automaticUpdates:0};
+  state.map={keyframes:[],landmarks:[],nextKeyframeId:1,nextLandmarkId:1,lastKeyframeId:null,sinceKeyframeVisual:0,poseInliers:0,reprojectionError:Infinity,confidence:0,relocalizations:0,loopClosures:0,lastRelocalizeAt:0,lastMapBuildAt:0,lastPoseAt:0,lastCorrection:0};
+  loadAutomaticProfile();resetStress();if(ui.save)ui.save.disabled=true;if(ui.stress)ui.stress.disabled=false;
+  setStage('tracking','Move naturally. The world lock self-initializes and continuously corrects itself—no calibration motions or measured distances.',100,'calibrating');
+  initializeWorldFromCurrentOrientation();
 }
 
 function nearestOrientation(time) {
@@ -447,7 +463,8 @@ function estimateFovFromTracks(raw,prevQ,currQ,w,h) {
   }
 }
 
-function correctedAcceleration() { return state.accelWorld; }
+function correctedAcceleration(){return state.accelWorld;}
+function averageAcceleration(t0,t1){const a=state.accelSamples.filter(s=>s.t>=t0-12&&s.t<=t1+12);if(!a.length)return state.accelWorld;return{x:a.reduce((n,s)=>n+s.a.x,0)/a.length,y:a.reduce((n,s)=>n+s.a.y,0)/a.length,z:a.reduce((n,s)=>n+s.a.z,0)/a.length};}
 function cross3(a,b){return{x:a.y*b.z-a.z*b.y,y:a.z*b.x-a.x*b.z,z:a.x*b.y-a.y*b.x};}
 function dot3(a,b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 function norm3(v){const n=vecLength(v)||1;return{x:v.x/n,y:v.y/n,z:v.z/n};}
@@ -509,225 +526,245 @@ function estimateTranslation(solution,w,h,dt,frameQ,prevQ) {
   return {...worldDelta,confidence:solution.confidence*geometric*(0.35+0.65*dirConfidence)*parallax,rawMagnitude};
 }
 
-function updateScaleCalibration(rawVisualDelta,dt) {
-  if(state.scaleLocked||(state.stage!=='xyz_lock'&&state.stage!=='settle_check'))return;
-  const c=state.calib,a=correctedAcceleration(),aMag=vecLength(a);
-  if(aMag>0.045)c.motionSeen=true;
-  c.inertialVelocity.x+=a.x*dt;c.inertialVelocity.y+=a.y*dt;c.inertialVelocity.z+=a.z*dt;
-  const inertialStep=vecLength(c.inertialVelocity)*dt,visualStep=rawVisualDelta.rawMagnitude;
-  if(rawVisualDelta.confidence>0.10&&visualStep<0.20){
-    c.rawVisualPosition.x+=rawVisualDelta.x;c.rawVisualPosition.y+=rawVisualDelta.y;c.rawVisualPosition.z+=rawVisualDelta.z;c.visualPath+=visualStep;
+function vAdd(a,b){return{x:a.x+b.x,y:a.y+b.y,z:a.z+b.z};}
+function vSub(a,b){return{x:a.x-b.x,y:a.y-b.y,z:a.z-b.z};}
+function vScale(a,k){return{x:a.x*k,y:a.y*k,z:a.z*k};}
+function vLerp(a,b,t){return{x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t),z:lerp(a.z,b.z,t)};}
+function rmsDescriptorDistance(a,b){if(!a||!b||a.length!==b.length)return Infinity;let s=0;for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d;}return Math.sqrt(s/a.length);}
+function descriptorAt(frame,x,y){
+  const {gray,w,h}=frame; x=Math.round(x);y=Math.round(y);if(x<6||y<6||x>=w-6||y>=h-6)return null;
+  const values=[];let sum=0;
+  for(let yy=-4;yy<=4;yy+=2)for(let xx=-4;xx<=4;xx+=2){const v=gray[(y+yy)*w+x+xx];values.push(v);sum+=v;}
+  const mean=sum/values.length;let ss=0;for(const v of values){const d=v-mean;ss+=d*d;}const sd=Math.sqrt(ss/values.length)+4;
+  return values.map(v=>(v-mean)/sd);
+}
+function solve3x3(A,b){
+  const m=[[A[0][0],A[0][1],A[0][2],b[0]],[A[1][0],A[1][1],A[1][2],b[1]],[A[2][0],A[2][1],A[2][2],b[2]]];
+  for(let c=0;c<3;c++){
+    let r=c;for(let i=c+1;i<3;i++)if(Math.abs(m[i][c])>Math.abs(m[r][c]))r=i;
+    if(Math.abs(m[r][c])<1e-9)return null;[m[c],m[r]]=[m[r],m[c]];
+    const d=m[c][c];for(let j=c;j<4;j++)m[c][j]/=d;
+    for(let i=0;i<3;i++)if(i!==c){const f=m[i][c];for(let j=c;j<4;j++)m[i][j]-=f*m[c][j];}
   }
-  if(inertialStep<0.10)c.inertialPath+=inertialStep;
-  if(state.stationary)c.inertialVelocity={x:0,y:0,z:0};
-  const rx=c.rawVisualPosition.x,off=Math.hypot(c.rawVisualPosition.y,c.rawVisualPosition.z),axisPurity=Math.abs(rx)>1e-5?off/Math.abs(rx):Infinity;
-  // Step 3 is now a real metric reference: the user moves exactly 0.50 m to world-right.
-  // This removes the old arbitrary 3.2 fallback and gives the lattice a physical scale.
-  if(!c.metricCaptured&&state.stationary&&Math.abs(rx)>0.022&&axisPurity<0.85){
-    const candidate=clamp(0.50/Math.abs(rx),0.12,20);
-    state.scaleSamples.push(candidate);if(state.scaleSamples.length>24)state.scaleSamples.shift();
-    const m=median(state.scaleSamples),spread=mad(state.scaleSamples,m);state.scale=m;
-    state.scaleStability=clamp(0.55+0.45*(1-axisPurity),0,1)*clamp(1-spread/(m*0.35+1e-3),0.45,1);
-    c.metricCaptured=true;
-    state.position={x:c.rawVisualPosition.x*state.scale,y:c.rawVisualPosition.y*state.scale,z:c.rawVisualPosition.z*state.scale};
-    state.velocity={x:0,y:0,z:0};
-  } else if(!c.metricCaptured){
-    state.scaleStability=clamp(Math.abs(rx)/0.07,0,0.48)*clamp(1-axisPurity/1.4,0.15,1);
+  return{x:m[0][3],y:m[1][3],z:m[2][3]};
+}
+function rayWorldFromPixel(px,camQ,w,h,fx,fy){const c={x:w/2,y:h/2},r=norm3({x:(px.x-c.x)/fx,y:-(px.y-c.y)/fy,z:-1});return norm3(qRotate(camQ,r));}
+function triangulateRays(c1,d1,c2,d2){
+  const w0=vSub(c1,c2),a=dot3(d1,d1),b=dot3(d1,d2),c=dot3(d2,d2),d=dot3(d1,w0),e=dot3(d2,w0),den=a*c-b*b;
+  if(Math.abs(den)<1e-5)return null;const t1=(b*e-c*d)/den,t2=(a*e-b*d)/den;if(t1<=0||t2<=0)return null;
+  const p1=vAdd(c1,vScale(d1,t1)),p2=vAdd(c2,vScale(d2,t2)),gap=posDist(p1,p2),p=vScale(vAdd(p1,p2),0.5);
+  const angle=Math.acos(clamp(dot3(d1,d2),-1,1));return{p,gap,angle,t1,t2};
+}
+function projectWorldPoint(P,camQ,camPos,w,h,fx,fy){const c=cameraPoint(P,camQ,camPos);if(c.z>=-0.06)return null;const p=projectCamera(c,fx,fy,w/2,h/2);return p.x>=0&&p.x<w&&p.y>=0&&p.y<h?p:null;}
+function trackPointSeeded(prev,curr,w,h,p,seed,search=8){
+  let best={score:Infinity,x:seed.x,y:seed.y},second=Infinity;
+  for(let dy=-search;dy<=search;dy+=2)for(let dx=-search;dx<=search;dx+=2){const x=seed.x+dx,y=seed.y+dy,score=patchSSD(prev,curr,w,h,p.x,p.y,x,y,3);if(score<best.score){second=best.score;best={score,x,y};}else if(score<second)second=score;}
+  const coarse={...best};for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const score=patchSSD(prev,curr,w,h,p.x,p.y,coarse.x+dx,coarse.y+dy,3);if(score<best.score)best={score,x:coarse.x+dx,y:coarse.y+dy};}
+  let back={score:Infinity,x:p.x,y:p.y};for(let dy=-6;dy<=6;dy+=2)for(let dx=-6;dx<=6;dx+=2){const x=p.x+dx,y=p.y+dy,score=patchSSD(curr,prev,w,h,best.x,best.y,x,y,3);if(score<back.score)back={score,x,y};}const fb=Math.hypot(back.x-p.x,back.y-p.y),uniqueness=clamp((second-best.score)/(second+1e-6),0,1);
+  return{...best,fb,confidence:clamp(uniqueness*2.8,0,1)*clamp((2400-best.score)/2100,0,1)};
+}
+function rescaleWorld(newScale){
+  if(!Number.isFinite(newScale)||newScale<=0)return;const old=state.scale||1,f=newScale/old;if(Math.abs(f-1)<1e-5){state.scale=newScale;return;}
+  state.position=vScale(state.position,f);state.velocity=vScale(state.velocity,f);state.lastPositionForDrift=vScale(state.lastPositionForDrift,f);
+  for(const kf of state.map.keyframes)kf.pos=vScale(kf.pos,f);for(const lm of state.map.landmarks){lm.pos=vScale(lm.pos,f);if(lm.anchor)lm.anchor.pos=vScale(lm.anchor.pos,f);}
+  state.scale=newScale;
+}
+function addScaleCandidate(value,weight=1,source='visual-imu'){
+  if(!Number.isFinite(value)||value<0.05||value>30||weight<=0)return;
+  const m=state.metric;m.scaleCandidates.push({value,weight,source,t:performance.now()});if(m.scaleCandidates.length>90)m.scaleCandidates.shift();
+  const vals=m.scaleCandidates.slice(-60).map(x=>x.value),med=median(vals),spread=mad(vals,med),good=m.scaleCandidates.slice(-60).filter(x=>Math.abs(x.value-med)<Math.max(med*0.55,3*spread));
+  if(good.length<4)return;const weighted=[];for(const x of good){const n=Math.max(1,Math.round(clamp(x.weight,0.2,2)*3));for(let i=0;i<n;i++)weighted.push(x.value);}const target=median(weighted);
+  const stability=clamp(good.length/24,0,1)*clamp(1-spread/(Math.abs(med)*0.45+1e-4),0,1);state.scaleStability=lerp(state.scaleStability,stability,0.18);
+  if(stability>0.18){const maxLogStep=stability>0.65?0.08:0.035,ratio=Math.exp(clamp(Math.log(target/state.scale),-maxLogStep,maxLogStep));rescaleWorld(state.scale*ratio);m.automaticUpdates++;}
+  state.scaleLocked=state.scaleStability>0.78&&good.length>=14;
+}
+function updateAutomaticScale(rawVisualDelta,dt,now){
+  const m=state.metric;if(rawVisualDelta.confidence>0.07&&rawVisualDelta.rawMagnitude>1e-5){
+    m.rawPosition.x+=rawVisualDelta.x;m.rawPosition.y+=rawVisualDelta.y;m.rawPosition.z+=rawVisualDelta.z;m.lastVisualAt=now;
+    const rv={x:rawVisualDelta.x/dt,y:rawVisualDelta.y/dt,z:rawVisualDelta.z/dt};
+    const smooth=vLerp(m.rawVelocity,rv,0.40);
+    if(m.lastRawVelocity){
+      const ra=vScale(vSub(smooth,m.lastRawVelocity),1/Math.max(dt,1e-3)),ia=state.frameAccelWorld||correctedAcceleration(),raMag=vecLength(ra),iaMag=vecLength(ia);
+      if(raMag>0.025&&iaMag>0.16&&iaMag<5.5){const align=dot3(norm3(ra),norm3(ia));if(align>0.58){const cand=dot3(ia,ra)/(dot3(ra,ra)+1e-9);addScaleCandidate(cand,clamp((align-0.55)*2.2,0.2,1.2),'acceleration');}}
+    }
+    m.rawVelocity=smooth;m.lastRawVelocity={...smooth};
+  }
+  const moving=!state.stationary&&(rawVisualDelta.confidence>0.08||vecLength(correctedAcceleration())>0.18);
+  if(moving&&!m.motionWindow)m.motionWindow={startAt:now,startRaw:{...m.rawPosition},startMapGauge:vScale(state.position,1/Math.max(state.scale,1e-6)),dp:{x:0,y:0,z:0},v:{x:0,y:0,z:0},imuTime:0};
+  if(m.motionWindow){
+    const age=(now-m.motionWindow.startAt)/1000;
+    if(state.stationary&&age>0.28){
+      const rawTrackDisp=vSub(m.rawPosition,m.motionWindow.startRaw),mapGaugeDisp=vSub(vScale(state.position,1/Math.max(state.scale,1e-6)),m.motionWindow.startMapGauge),rawDisp=state.map.confidence>0.22&&state.map.poseInliers>=5?mapGaugeDisp:rawTrackDisp,imuDisp=m.motionWindow.dp,rm=vecLength(rawDisp),im=vecLength(imuDisp);
+      if(rm>0.006&&im>0.004&&age<3.0){const align=dot3(norm3(rawDisp),norm3(imuDisp));if(align>0.45){const cand=dot3(imuDisp,rawDisp)/(dot3(rawDisp,rawDisp)+1e-9);addScaleCandidate(cand,clamp(align,0.3,1.2),'zero-velocity-window');}}
+      m.motionWindow=null;
+    }else if(age>3.2)m.motionWindow=null;
   }
 }
-
-function updatePose(rawVisualDelta,dt,now) {
-  const a=correctedAcceleration(),gyroMag=vecLength(state.gyro),accMag=vecLength(a);
-  const visualSpeed=(rawVisualDelta.rawMagnitude||0)/Math.max(dt,1e-3);
-  const motionFresh=now-state.lastMotionAt<350;
-  state.visualStepMagnitude=lerp(state.visualStepMagnitude,rawVisualDelta.rawMagnitude||0,0.28);
-
-  // Hard release: once deliberate translation is observed, the old stillness
-  // latch cannot suppress the beginning of the user's movement.
-  const deliberateVisual=rawVisualDelta.confidence>0.11&&visualSpeed>0.028;
-  const deliberateInertial=motionFresh&&accMag>0.30;
-  const deliberateAngular=Math.max(gyroMag,state.orientationRate)>0.060;
-  const deliberate=deliberateVisual||deliberateInertial||deliberateAngular;
-  if(deliberate){
-    state.stationaryScore=Math.min(state.stationaryScore,0.12);
-    state.stationary=false;state.stillSince=0;state.lastMoveAt=now;state.movementGate='MOVING';
-  } else {
-    const visualStillScore=state.validTracks>=6?1-clamp((visualSpeed-0.010)/0.12,0,1):0.52;
-    const angularStillScore=1-clamp((Math.max(gyroMag,state.orientationRate)-0.020)/0.28,0,1);
-    const accelStillScore=1-clamp((accMag-0.06)/0.85,0,1);
-    const stationaryQuality=(motionFresh||now-state.lastOrientationAt<350)?(0.50*visualStillScore+0.28*angularStillScore+0.22*accelStillScore):0;
-    state.stationaryScore=clamp(state.stationaryScore+dt*(stationaryQuality>0.55?stationaryQuality*1.8:-1.7),0,1);
-    state.stationary=state.stationaryScore>0.58;
-    state.movementGate=state.stationary?'STILL':'FREE';
+function addKeyframe(frame,camQ,now){
+  const m=state.map,kf={id:m.nextKeyframeId++,t:now,pos:{...state.position},q:{...camQ},frame:{gray:frame.gray.slice(),w:frame.w,h:frame.h},fovX:state.fovX};
+  m.keyframes.push(kf);m.lastKeyframeId=kf.id;m.sinceKeyframeVisual=0;if(m.keyframes.length>28)m.keyframes.shift();return kf;
+}
+function keyframeById(id){return state.map.keyframes.find(k=>k.id===id)||null;}
+function frameMapMatches(kf,frame,currQ){
+  if(!kf||kf.frame.w!==frame.w||kf.frame.h!==frame.h)return[];const w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),corners=selectCorners(kf.frame,85),out=[];
+  for(const p of corners){const pred=predictedRotatedPixel(p,kf.q,currQ,fx,fy,w/2,h/2);if(!pred||pred.x<8||pred.y<8||pred.x>w-8||pred.y>h-8)continue;const t=trackPointSeeded(kf.frame.gray,frame.gray,w,h,p,pred,9);if(t.confidence<0.12||t.fb>3.2)continue;const d1=descriptorAt(kf.frame,p.x,p.y),d2=descriptorAt(frame,t.x,t.y);if(!d1||!d2||rmsDescriptorDistance(d1,d2)>0.72)continue;out.push({p,q:{x:t.x,y:t.y},descriptor:d2,confidence:t.confidence});}
+  return out;
+}
+function buildPersistentMap(frame,camQ,now){
+  const m=state.map;if(!state.originCaptured||state.visualConfidence<0.08)return;
+  let kf=keyframeById(m.lastKeyframeId);if(!kf){addKeyframe(frame,camQ,now);return;}
+  const rot=qAngle(kf.q,camQ),baseline=posDist(kf.pos,state.position),age=now-kf.t;
+  if(m.sinceKeyframeVisual<0.012&&rot<5*DEG&&age<1100)return;if(age<260)return;
+  const matches=frameMapMatches(kf,frame,camQ),w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),created=[],currentKeyframeId=m.nextKeyframeId;
+  if(baseline>Math.max(0.004,state.scale*0.004))for(const mt of matches){
+    const d1=rayWorldFromPixel(mt.p,kf.q,w,h,fx,fy),d2=rayWorldFromPixel(mt.q,camQ,w,h,fx,fy),tri=triangulateRays(kf.pos,d1,state.position,d2);if(!tri)continue;
+    if(tri.angle<1.0*DEG||tri.gap>Math.max(0.035,baseline*0.18))continue;
+    const depthMax=Math.max(0.4,baseline*120);if(tri.t1>depthMax||tri.t2>depthMax)continue;
+    let duplicate=false;for(const lm of m.landmarks){if(posDist(lm.pos,tri.p)<Math.max(0.018,state.scale*0.012)&&rmsDescriptorDistance(lm.descriptor,mt.descriptor)<0.42){duplicate=true;if(lm.lastConfirmedKeyframeId!==currentKeyframeId){lm.observations++;lm.lastConfirmedKeyframeId=currentKeyframeId;}lm.lastSeen=now;break;}}
+    if(!duplicate)created.push({id:m.nextLandmarkId++,pos:tri.p,descriptor:mt.descriptor,observations:2,lastConfirmedKeyframeId:currentKeyframeId,createdAt:now,lastSeen:now,confidence:clamp(mt.confidence*(tri.angle/(4*DEG)),0.15,1),anchor:{pos:{...kf.pos},q:{...kf.q},pixel:{...mt.p},w,h,fx,fy}});
+    if(created.length>=28)break;
   }
-
-  if(state.stationary){
-    if(!state.stillSince)state.stillSince=now;
-    state.velocity={x:0,y:0,z:0};
-  } else state.stillSince=0;
-
-  updateScaleCalibration(rawVisualDelta,dt);
-  const active=(state.stage==='xyz_lock'||state.stage==='settle_check'||state.stage==='locked'||state.stage==='revalidating');
-  if(active&&!state.stationary){
-    if(rawVisualDelta.confidence>0.08&&rawVisualDelta.rawMagnitude>0.00015){
-      const gain=clamp(0.78+0.22*rawVisualDelta.confidence,0.78,1);
-      const dx=rawVisualDelta.x*state.scale*gain,dy=rawVisualDelta.y*state.scale*gain,dz=rawVisualDelta.z*state.scale*gain;
-      state.position.x+=dx;state.position.y+=dy;state.position.z+=dz;
-      const measured={x:dx/dt,y:dy/dt,z:dz/dt};
-      state.velocity.x=lerp(state.velocity.x,measured.x,0.62);
-      state.velocity.y=lerp(state.velocity.y,measured.y,0.62);
-      state.velocity.z=lerp(state.velocity.z,measured.z,0.62);
-    } else {
-      // Never invent position from browser acceleration when vision is weak.
-      // Holding the last visual position is far safer than an inertial free-run that becomes drift.
-      state.velocity.x*=0.55;state.velocity.y*=0.55;state.velocity.z*=0.55;
+  m.landmarks.push(...created);if(m.landmarks.length>520){m.landmarks.sort((a,b)=>(b.observations+2*b.confidence)-(a.observations+2*a.confidence));m.landmarks.length=420;}
+  addKeyframe(frame,camQ,now);m.lastMapBuildAt=now;
+}
+function currentFeatureSet(frame,maxPoints=95){return selectCorners(frame,maxPoints).map(p=>({p:{x:p.x,y:p.y},descriptor:descriptorAt(frame,p.x,p.y)})).filter(x=>x.descriptor);}
+function localMapMatches(frame,camQ,predPos){
+  const m=state.map;if(m.landmarks.length<6)return[];const w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),features=currentFeatureSet(frame,105),used=new Set(),out=[];
+  const lms=[...m.landmarks].sort((a,b)=>(b.lastSeen+b.observations*100)-(a.lastSeen+a.observations*100)).slice(0,260);
+  for(const lm of lms){const pp=projectWorldPoint(lm.pos,camQ,predPos,w,h,fx,fy);if(!pp)continue;let best=null,second=Infinity;
+    for(let i=0;i<features.length;i++){if(used.has(i))continue;const f=features[i],distPx=Math.hypot(f.p.x-pp.x,f.p.y-pp.y);if(distPx>18)continue;const dd=rmsDescriptorDistance(lm.descriptor,f.descriptor);if(!best||dd<best.dd){second=best?best.dd:second;best={i,f,dd};}else if(dd<second)second=dd;}
+    if(best&&best.dd<0.68&&(second===Infinity||best.dd<second*0.86)){used.add(best.i);out.push({landmark:lm,pixel:best.f.p,descriptorDistance:best.dd});}
+  }return out;
+}
+function globalMapMatches(frame){
+  const m=state.map;if(m.landmarks.length<12)return[];const features=currentFeatureSet(frame,82),lms=m.landmarks.filter(l=>l.observations>=3).sort((a,b)=>(b.observations+b.confidence)-(a.observations+a.confidence)).slice(0,340),candidates=[];
+  for(let fi=0;fi<features.length;fi++){let best=null,second=null;for(const lm of lms){const dd=rmsDescriptorDistance(features[fi].descriptor,lm.descriptor);if(!best||dd<best.dd){second=best;best={lm,dd};}else if(!second||dd<second.dd)second={lm,dd};}if(best&&best.dd<0.52&&(!second||best.dd<second.dd*0.72))candidates.push({landmark:best.lm,pixel:features[fi].p,descriptorDistance:best.dd,fi});}
+  candidates.sort((a,b)=>a.descriptorDistance-b.descriptorDistance);const used=new Set(),out=[];for(const c of candidates){if(used.has(c.landmark.id))continue;used.add(c.landmark.id);out.push(c);if(out.length>=28)break;}return out;
+}
+function solveCameraCenter(matches,camQ,w,h,fx,fy){
+  if(matches.length<2)return null;const A=[[0,0,0],[0,0,0],[0,0,0]],b=[0,0,0];
+  for(const mt of matches){const d=rayWorldFromPixel(mt.pixel,camQ,w,h,fx,fy),P=mt.landmark.pos,xx=1-d.x*d.x,xy=-d.x*d.y,xz=-d.x*d.z,yy=1-d.y*d.y,yz=-d.y*d.z,zz=1-d.z*d.z;
+    A[0][0]+=xx;A[0][1]+=xy;A[0][2]+=xz;A[1][0]+=xy;A[1][1]+=yy;A[1][2]+=yz;A[2][0]+=xz;A[2][1]+=yz;A[2][2]+=zz;
+    b[0]+=xx*P.x+xy*P.y+xz*P.z;b[1]+=xy*P.x+yy*P.y+yz*P.z;b[2]+=xz*P.x+yz*P.y+zz*P.z;
+  }return solve3x3(A,b);
+}
+function solveLinearSystem(A,b){
+  const n=b.length,m=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){let r=c;for(let i=c+1;i<n;i++)if(Math.abs(m[i][c])>Math.abs(m[r][c]))r=i;if(Math.abs(m[r][c])<1e-10)return null;[m[c],m[r]]=[m[r],m[c]];const d=m[c][c];for(let j=c;j<=n;j++)m[c][j]/=d;for(let i=0;i<n;i++)if(i!==c){const f=m[i][c];if(Math.abs(f)<1e-14)continue;for(let j=c;j<=n;j++)m[i][j]-=f*m[c][j];}}
+  return m.map(r=>r[n]);
+}
+function refineMapPose(matches,frame,startQ,startPos){
+  if(matches.length<4||!startPos)return null;
+  const w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),epsP=Math.max(1e-4,state.scale*0.00035),epsR=0.00045;
+  let qe=qNorm(startQ),pos={...startPos};
+  for(let iter=0;iter<5;iter++){
+    const A=Array.from({length:6},()=>Array(6).fill(0)),b=Array(6).fill(0);let used=0,totalErr=0;
+    for(const mt of matches){
+      const base=projectWorldPoint(mt.landmark.pos,qe,pos,w,h,fx,fy);if(!base)continue;const rx=mt.pixel.x-base.x,ry=mt.pixel.y-base.y,e=Math.hypot(rx,ry);if(e>18)continue;const weight=e<=4?1:4/Math.max(e,1e-6),jx=[],jy=[];
+      for(let k=0;k<6;k++){
+        let qp=qe,ppos={...pos};if(k<3){if(k===0)ppos.x+=epsP;else if(k===1)ppos.y+=epsP;else ppos.z+=epsP;}else{const ax=k===3?1:0,ay=k===4?1:0,az=k===5?1:0;qp=qNorm(qMul(qAxis(ax,ay,az,epsR),qe));}
+        const p2=projectWorldPoint(mt.landmark.pos,qp,ppos,w,h,fx,fy);if(!p2){jx.push(0);jy.push(0);continue;}const ep=k<3?epsP:epsR;jx.push((p2.x-base.x)/ep);jy.push((p2.y-base.y)/ep);
+      }
+      for(let i=0;i<6;i++){b[i]+=weight*(jx[i]*rx+jy[i]*ry);for(let j=0;j<6;j++)A[i][j]+=weight*(jx[i]*jx[j]+jy[i]*jy[j]);}used++;totalErr+=e;
     }
+    if(used<4)break;for(let i=0;i<6;i++)A[i][i]+=i<3?1e-3:3e-3;const d=solveLinearSystem(A,b);if(!d)break;
+    let dp={x:d[0],y:d[1],z:d[2]},pm=vecLength(dp),rm=Math.hypot(d[3],d[4],d[5]);const pLimit=Math.max(0.08,state.scale*0.08);if(pm>pLimit)dp=vScale(dp,pLimit/pm);pos=vAdd(pos,dp);
+    if(rm>1e-8){const rLimit=0.055,rr=Math.min(rm,rLimit),dq=qAxis(d[3]/rm,d[4]/rm,d[5]/rm,rr);qe=qNorm(qMul(dq,qe));}
+    if(pm<epsP*0.7&&rm<epsR*0.7)break;
   }
-
-  const maxSpeed=5.0,speed=vecLength(state.velocity);
-  if(speed>maxSpeed){const k=maxSpeed/speed;state.velocity.x*=k;state.velocity.y*=k;state.velocity.z*=k;}
-  if(!deliberate&&!state.stationary){state.velocity.x*=0.88;state.velocity.y*=0.88;state.velocity.z*=0.88;}
-
-  const sourceAgreement=clamp(1-Math.abs(visualSpeed-accMag*0.10)/(visualSpeed+0.30),0,1);
-  state.motionConfidence=clamp(0.56*state.visualConfidence+0.16*(motionFresh?1:0.55)+0.18*sourceAgreement+0.10*(state.stationary?1:0.8),0,1);
-  const p=state.position,lp=state.lastPositionForDrift;
-  if(state.stationary){const drift=Math.hypot(p.x-lp.x,p.y-lp.y,p.z-lp.z)/Math.max(dt,1e-3);state.driftRate=lerp(state.driftRate,drift,0.10);}else state.driftRate*=0.96;
-  state.lastPositionForDrift={...p};
+  return{q:qe,pos};
+}
+function mapPoseSolution(matches,frame,camQ){
+  if(matches.length<4)return null;const w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2),pool=matches.slice(0,20);let best=null,attempts=0;
+  // A wider first gate tolerates a few degrees of IMU orientation drift. The alternating
+  // 3D-bearing refinement below then lets the visual map correct both position AND attitude.
+  for(let i=0;i<pool.length&&attempts<55;i++)for(let j=i+1;j<pool.length&&attempts<55;j++,attempts++){
+    const pos=solveCameraCenter([pool[i],pool[j]],camQ,w,h,fx,fy);if(!pos)continue;const scored=[];for(const mt of matches){const pp=projectWorldPoint(mt.landmark.pos,camQ,pos,w,h,fx,fy);if(!pp)continue;const e=Math.hypot(pp.x-mt.pixel.x,pp.y-mt.pixel.y);if(e<11.0)scored.push({mt,e});}
+    if(scored.length<4)continue;const err=median(scored.map(x=>x.e));if(!best||scored.length>best.inliers.length||(scored.length===best.inliers.length&&err<best.error))best={pos,inliers:scored.map(x=>x.mt),error:err};
+  }
+  if(!best)return null;const refined=refineMapPose(best.inliers,frame,camQ,best.pos);if(refined){best.pos=refined.pos;best.q=refined.q;}else best.q=camQ;
+  let final=[];for(const mt of matches){const pp=projectWorldPoint(mt.landmark.pos,best.q,best.pos,w,h,fx,fy);if(!pp)continue;const e=Math.hypot(pp.x-mt.pixel.x,pp.y-mt.pixel.y);if(e<5.5)final.push({mt,e});}
+  if(final.length<4)return null;const second=refineMapPose(final.map(x=>x.mt),frame,best.q,best.pos);if(second){best.pos=second.pos;best.q=second.q;}
+  final=[];for(const mt of matches){const pp=projectWorldPoint(mt.landmark.pos,best.q,best.pos,w,h,fx,fy);if(!pp)continue;const e=Math.hypot(pp.x-mt.pixel.x,pp.y-mt.pixel.y);if(e<4.5)final.push({mt,e});}
+  if(final.length<4)return null;best.inliers=final.map(x=>x.mt);best.error=median(final.map(x=>x.e));best.confidence=clamp(final.length/14,0,1)*clamp(1-best.error/5,0,1);return best;
+}
+function qualifyMapMatches(matches,now){
+  const kid=state.map.lastKeyframeId;if(kid==null)return matches.filter(mt=>mt.landmark.observations>=3);for(const mt of matches){const lm=mt.landmark;if(lm.lastConfirmedKeyframeId!==kid){lm.observations++;lm.lastConfirmedKeyframeId=kid;lm.lastSeen=now;lm.confidence=clamp(lm.confidence+0.035,0,1);}}return matches.filter(mt=>mt.landmark.observations>=3);
+}
+function refineMatchedLandmarks(sol,frame,camQ){
+  if(!sol||!sol.inliers)return;const w=frame.w,h=frame.h,fx=.5*w/Math.tan(state.fovX*DEG/2),vfov=2*Math.atan(Math.tan(state.fovX*DEG/2)*(h/w)),fy=.5*h/Math.tan(vfov/2);
+  for(const mt of sol.inliers){const lm=mt.landmark,a=lm.anchor;if(!a||lm.observations<3)continue;const d1=rayWorldFromPixel(a.pixel,a.q,a.w,a.h,a.fx,a.fy),d2=rayWorldFromPixel(mt.pixel,camQ,w,h,fx,fy),tri=triangulateRays(a.pos,d1,sol.pos,d2);if(!tri||tri.angle<1.1*DEG)continue;const baseline=posDist(a.pos,sol.pos);if(tri.gap>Math.max(0.025,baseline*0.12))continue;const gain=clamp(0.16/Math.sqrt(lm.observations),0.025,0.08);lm.pos=vLerp(lm.pos,tri.p,gain);}
+}
+function applyMapPose(sol,global,now,frame,camQ){
+  if(!sol||sol.inliers.length<4||sol.error>4.5)return false;const m=state.map,old={...state.position},correction=posDist(old,sol.pos),gain=global?clamp(0.68+sol.confidence*0.25,0.68,0.93):clamp(0.42+sol.confidence*0.38,0.42,0.82),solQ=sol.q||camQ;
+  const orientDelta=qNorm(qMul(solQ,qInv(camQ))),orientError=qAngle(q(),orientDelta);if(orientError<14*DEG&&orientError>0.00015){const og=global?clamp(0.42+0.35*sol.confidence,0.42,0.72):clamp(0.18+0.30*sol.confidence,0.18,0.46),corrQ=qSlerp(q(),orientDelta,og);state.orientationCorrection=qNorm(qMul(corrQ,state.orientationCorrection));}
+  state.position=vLerp(state.position,sol.pos,gain);state.velocity=vScale(state.velocity,global?0.35:0.68);m.lastCorrection=correction;m.poseInliers=sol.inliers.length;m.reprojectionError=sol.error;m.confidence=lerp(m.confidence,sol.confidence,0.35);m.relocalizations++;
+  const loopThreshold=Math.max(0.12,state.scale*0.08);if(global&&(correction>loopThreshold||orientError>1.5*DEG))m.loopClosures++;
+  for(const mt of sol.inliers){mt.landmark.lastSeen=now;mt.landmark.confidence=clamp(mt.landmark.confidence+0.02,0,1);}refineMatchedLandmarks(sol,frame,solQ);
+  state.poseReason=`Map-authoritative pose: ${sol.inliers.length} landmark inliers, ${sol.error.toFixed(1)} px reprojection${orientError>0.35*DEG?` • attitude correction ${(orientError/DEG).toFixed(1)}°`:''}${global?' • global relocalization':''}`;return true;
+}
+function relocalizeAgainstMap(frame,camQ,now){
+  const m=state.map;if(m.landmarks.length<6||now-(m.lastPoseAt||0)<85)return false;m.lastPoseAt=now;let matches=qualifyMapMatches(localMapMatches(frame,camQ,state.position),now),sol=mapPoseSolution(matches,frame,camQ),ok=applyMapPose(sol,false,now,frame,camQ);
+  const shouldGlobal=(!ok||m.confidence<0.25||now-m.lastRelocalizeAt>1300)&&now-m.lastRelocalizeAt>450;
+  if(shouldGlobal){m.lastRelocalizeAt=now;matches=globalMapMatches(frame);sol=mapPoseSolution(matches,frame,camQ);if(applyMapPose(sol,true,now,frame,camQ))ok=true;}
+  if(!ok){m.poseInliers=0;m.confidence*=0.94;m.reprojectionError=Infinity;}return ok;
+}
+function updateMapScaleEvidence(dt){
+  const m=state.metric,mp=state.map;if(mp.confidence<0.24||mp.poseInliers<5||!Number.isFinite(mp.reprojectionError)||mp.reprojectionError>3.8)return;
+  const gp=vScale(state.position,1/Math.max(state.scale,1e-6));if(!m.mapGaugePosition){m.mapGaugePosition=gp;return;}const gv=vScale(vSub(gp,m.mapGaugePosition),1/Math.max(dt,1e-3)),smooth=vLerp(m.mapGaugeVelocity,gv,0.38);m.mapGaugePosition=gp;
+  if(m.lastMapGaugeVelocity&&(mp.lastCorrection||0)<Math.max(0.08,state.scale*0.05)){const ga=vScale(vSub(smooth,m.lastMapGaugeVelocity),1/Math.max(dt,1e-3)),ia=state.frameAccelWorld||correctedAcceleration(),gm=vecLength(ga),im=vecLength(ia);if(gm>0.02&&im>0.16&&im<5.5){const align=dot3(norm3(ga),norm3(ia));if(align>0.62){const cand=dot3(ia,ga)/(dot3(ga,ga)+1e-9);addScaleCandidate(cand,clamp((align-0.58)*2.8,0.35,1.5),'map-acceleration');}}}m.mapGaugeVelocity=smooth;m.lastMapGaugeVelocity={...smooth};
+}
+function learnQuietBiasAndGravity(){
+  if(!state.originCaptured||!state.stationary||Math.max(vecLength(state.gyro),state.orientationRate)>0.04)return;
+  if(state.hasLinearAcceleration){const a=state.accelDevice;state.accelBiasDevice={x:lerp(state.accelBiasDevice.x,a.x,0.025),y:lerp(state.accelBiasDevice.y,a.y,0.025),z:lerp(state.accelBiasDevice.z,a.z,0.025)};}
+  if(state.hasGravityAcceleration){const g=qRotate(relativeMotionQ(),state.accelGravityDevice);state.gravityWorld={x:lerp(state.gravityWorld.x,g.x,0.012),y:lerp(state.gravityWorld.y,g.y,0.012),z:lerp(state.gravityWorld.z,g.z,0.012)};}
+}
+function updatePose(rawVisualDelta,dt,now) {
+  const a=correctedAcceleration(),gyroMag=vecLength(state.gyro),accMag=vecLength(a),visualSpeed=(rawVisualDelta.rawMagnitude||0)/Math.max(dt,1e-3),motionFresh=now-state.lastMotionAt<350;
+  state.visualStepMagnitude=lerp(state.visualStepMagnitude,rawVisualDelta.rawMagnitude||0,0.28);
+  const deliberateVisual=rawVisualDelta.confidence>0.10&&visualSpeed>0.022,deliberateInertial=motionFresh&&accMag>0.24,deliberateAngular=Math.max(gyroMag,state.orientationRate)>0.055,deliberate=deliberateVisual||deliberateInertial||deliberateAngular;
+  if(deliberate){state.stationaryScore=Math.min(state.stationaryScore,0.12);state.stationary=false;state.stillSince=0;state.lastMoveAt=now;state.movementGate='MOVING';}
+  else{const vs=state.validTracks>=6?1-clamp((visualSpeed-0.008)/0.10,0,1):0.56,rs=1-clamp((Math.max(gyroMag,state.orientationRate)-0.018)/0.24,0,1),as=1-clamp((accMag-0.05)/0.70,0,1),q=(motionFresh||now-state.lastOrientationAt<350)?0.50*vs+0.29*rs+0.21*as:0;state.stationaryScore=clamp(state.stationaryScore+dt*(q>0.58?q*2.0:-1.8),0,1);state.stationary=state.stationaryScore>0.62;state.movementGate=state.stationary?'STILL':'FREE';}
+  if(state.stationary){if(!state.stillSince)state.stillSince=now;state.velocity={x:0,y:0,z:0};}else state.stillSince=0;
+  learnQuietBiasAndGravity();updateAutomaticScale(rawVisualDelta,dt,now);
+  if(state.originCaptured&&!state.stationary&&rawVisualDelta.confidence>0.075&&rawVisualDelta.rawMagnitude>0.00012){const gain=clamp(0.78+0.22*rawVisualDelta.confidence,0.78,1),d=vScale(rawVisualDelta,state.scale*gain);state.position=vAdd(state.position,d);state.map.sinceKeyframeVisual+=rawVisualDelta.rawMagnitude;const measured=vScale(d,1/dt);state.velocity=vLerp(state.velocity,measured,0.60);}else if(!state.stationary)state.velocity=vScale(state.velocity,0.60);
+  const speed=vecLength(state.velocity);if(speed>5){state.velocity=vScale(state.velocity,5/speed);}if(!deliberate&&!state.stationary)state.velocity=vScale(state.velocity,0.88);
+  const sourceAgreement=clamp(1-Math.abs(visualSpeed-accMag*0.10)/(visualSpeed+0.30),0,1);state.motionConfidence=clamp(0.52*state.visualConfidence+0.15*(motionFresh?1:0.55)+0.14*sourceAgreement+0.19*state.map.confidence,0,1);
+  const p=state.position,lp=state.lastPositionForDrift;if(state.stationary){const drift=Math.hypot(p.x-lp.x,p.y-lp.y,p.z-lp.z)/Math.max(dt,1e-3);state.driftRate=lerp(state.driftRate,drift,0.10);}else state.driftRate*=0.96;state.lastPositionForDrift={...p};
 }
 
 function processVideoFrame(now,meta={}) {
-  if(now-state.lastProcessAt<45)return;
-  const dt=clamp((now-(state.lastProcessAt||now))/1000,0.01,0.12);state.lastProcessAt=now;
-  const frame=captureGray();if(!frame)return;
-  const frameTime=Number.isFinite(meta.presentationTime)?meta.presentationTime:(Number.isFinite(meta.expectedDisplayTime)?meta.expectedDisplayTime:now);
+  if(now-state.lastProcessAt<42)return;const dt=clamp((now-(state.lastProcessAt||now))/1000,0.01,0.12);state.lastProcessAt=now;
+  const frame=captureGray();if(!frame)return;const frameTime=Number.isFinite(meta.presentationTime)?meta.presentationTime:(Number.isFinite(meta.expectedDisplayTime)?meta.expectedDisplayTime:now);
+  if(!state.originCaptured)initializeWorldFromCurrentOrientation();
   if(state.previousFrame&&state.previousFrameTime){
-    const raw=qualityTracks(state.previousFrame,frame),rawFlow=raw.length?median(raw.map(t=>Math.hypot(t.observed.x,t.observed.y))):0;
-    state.flowMagnitude=lerp(state.flowMagnitude,rawFlow,0.25);
-    if(state.stage==='fov_sync')estimateVideoImuTiming(raw,state.previousFrameTime,frameTime,frame.w,frame.h);
-    const prevQ=nearestOrientation(state.previousFrameTime-state.videoImuLagMs),frameQ=nearestOrientation(frameTime-state.videoImuLagMs);
-    if(state.stage==='fov_sync')estimateFovFromTracks(raw,prevQ,frameQ,frame.w,frame.h);
-    const solution=residualSolution(raw,prevQ,frameQ,frame.w,frame.h,state.fovX);
-    state.tracks=solution.inliers;state.validTracks=solution.inliers.length;state.visualConfidence=lerp(state.visualConfidence,solution.confidence,0.26);
+    const raw=qualityTracks(state.previousFrame,frame),rawFlow=raw.length?median(raw.map(t=>Math.hypot(t.observed.x,t.observed.y))):0;state.flowMagnitude=lerp(state.flowMagnitude,rawFlow,0.25);
+    // Timing and intrinsics are refined opportunistically during ordinary turns; there is no calibration stage.
+    estimateVideoImuTiming(raw,state.previousFrameTime,frameTime,frame.w,frame.h);
+    const imuT0=state.previousFrameTime-state.videoImuLagMs,imuT1=frameTime-state.videoImuLagMs,prevQ=nearestOrientation(imuT0),frameQ=nearestOrientation(imuT1);state.frameAccelWorld=averageAcceleration(imuT0,imuT1);estimateFovFromTracks(raw,prevQ,frameQ,frame.w,frame.h);
+    const solution=residualSolution(raw,prevQ,frameQ,frame.w,frame.h,state.fovX);state.tracks=solution.inliers;state.validTracks=solution.inliers.length;state.visualConfidence=lerp(state.visualConfidence,solution.confidence,0.26);
     const vv=estimateTranslation(solution,frame.w,frame.h,dt,frameQ,prevQ);state.translationSignal=vv;updatePose(vv,dt,now);
+    const mapCorrected=relocalizeAgainstMap(frame,relativeQ(frameQ),now);updateMapScaleEvidence(dt);buildPersistentMap(frame,relativeQ(frameQ),now);
+    if(!mapCorrected&&state.visualConfidence>0.08)state.poseReason=`Visual-inertial tracking • building persistent map (${state.map.landmarks.length} landmarks)`;
     state.previousFrameQ=frameQ;
-  }
-  state.previousFrame=frame;state.previousFrameTime=frameTime;state.frame=frame;
-  state.processCount++;
+  }else if(state.originCaptured){addKeyframe(frame,relativeCameraQ(),now);}
+  state.previousFrame=frame;state.previousFrameTime=frameTime;state.frame=frame;state.processCount++;
   if(now-state.processStamp>=1000){state.processedFps=state.processCount*1000/(now-state.processStamp);state.processCount=0;state.processStamp=now;}
 }
 
-function originStability(now,dt) {
-  const motionFresh=now-state.lastMotionAt<500,orientationFresh=now-state.lastOrientationAt<500;
-  const gyroMag=vecLength(state.gyro),accMag=vecLength(state.accelWorld);
-  const gyroScore=1-clamp((Math.max(gyroMag,state.orientationRate)-0.015)/0.22,0,1);
-  const accScore=1-clamp((accMag-0.08)/1.15,0,1);
-  const visualScore=state.validTracks>=5?1-clamp((state.flowMagnitude-0.15)/3.8,0,1):0.62;
-  const freshness=(motionFresh||orientationFresh)?1:0;
-  const quality=freshness*(0.43*gyroScore+0.34*accScore+0.23*visualScore);
-  state.originQuality=lerp(state.originQuality,quality,0.12);
-  const gain=quality>0.34?quality*0.78:-0.08;
-  state.stillScore=clamp(state.stillScore+gain*dt,0,1.05);
-  if(quality>0.38){
-    state.originQuaternionSamples.push(state.orientationQ);
-    state.originAccelSamples.push({...state.accelDevice});
-    if(state.hasGravityAcceleration)state.originGravitySamples.push({q:{...state.orientationQ},a:{...state.accelGravityDevice}});
-    if(state.originQuaternionSamples.length>120)state.originQuaternionSamples.shift();
-    if(state.originAccelSamples.length>120)state.originAccelSamples.shift();
-    if(state.originGravitySamples.length>120)state.originGravitySamples.shift();
-  }
-  return quality;
-}
-function captureOrigin() {
-  const qSamples=state.originQuaternionSamples.slice(-80),aSamples=state.originAccelSamples.slice(-80),gSamples=state.originGravitySamples.slice(-80);
-  const averaged=qAverage(qSamples.length?qSamples:[state.orientationQ]);
-  // World Y is gravity-up; only the initial horizontal heading is zeroed.
-  // Pitch/roll are intentionally NOT baked into the world basis.
-  state.baseQ=qAxis(0,1,0,cameraHeadingAngle(averaged));
-  state.orientationCorrection=q();state.orientationHoldQ=null;
-  if(aSamples.length&&state.hasLinearAcceleration){state.accelBiasDevice={x:median(aSamples.map(a=>a.x)),y:median(aSamples.map(a=>a.y)),z:median(aSamples.map(a=>a.z))};}
-  if(gSamples.length){
-    const worldG=gSamples.map(s=>qRotate(rawRelativeQ(s.q),s.a));
-    state.gravityWorld={x:median(worldG.map(v=>v.x)),y:median(worldG.map(v=>v.y)),z:median(worldG.map(v=>v.z))};
-  }
-  state.previousFrameQ=state.orientationQ;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.originCaptured=true;state.worldRevision++;
-}
 function maintainWorldOrientationLock() {
-  if(!state.originCaptured||!state.baseQ)return;
-  const raw=rawRelativeQ(state.orientationQ),corrected=qNorm(qMul(state.orientationCorrection,raw));
-  const angular=Math.max(vecLength(state.gyro),state.orientationRate);
-  if(state.stationary&&angular<0.028){
-    if(!state.orientationHoldQ)state.orientationHoldQ=corrected;
-    else state.orientationCorrection=qNorm(qMul(state.orientationHoldQ,qInv(raw)));
-  } else state.orientationHoldQ=null;
+  if(!state.originCaptured||!state.baseQ)return;const raw=rawRelativeQ(state.orientationQ),corrected=qNorm(qMul(state.orientationCorrection,raw)),angular=Math.max(vecLength(state.gyro),state.orientationRate);
+  if(state.stationary&&state.stillSince&&performance.now()-state.stillSince>900&&angular<0.007){if(!state.orientationHoldQ)state.orientationHoldQ=corrected;else state.orientationCorrection=qNorm(qMul(state.orientationHoldQ,qInv(raw)));}else state.orientationHoldQ=null;
 }
-
-function updateSetupGuidance(now,originQuality=0) {
-  if(state.stage==='hold_still'){
-    ui.stepTimer.textContent=`${Math.round(state.stillScore*100)}%`;
-    ui.stepDetail.textContent=state.stillScore>0.65?'Origin is averaging now—keep holding normally.':'Natural hand tremor is accepted; avoid deliberate movement.';
-  } else if(state.stage==='fov_sync'){
-    ui.stepTimer.textContent=`${Math.round(state.focalConfidence*100)}%`;
-    ui.stepDetail.textContent=`Turn left/right slowly. Camera↔IMU lag ${state.videoImuLagMs.toFixed(0)} ms • residual ${Number.isFinite(state.projectionError)?state.projectionError.toFixed(1)+' px':'—'}.`;
-  } else if(state.stage==='xyz_lock'){
-    ui.stepTimer.textContent=state.calib.metricCaptured?'SCALE LOCK':'0.50 m';
-    ui.stepDetail.textContent='Keep the same heading. Move the phone exactly 0.50 m (19.7 in) to your RIGHT in one smooth motion, then stop.';
-  } else if(state.stage==='settle_check'){
-    const elapsed=state.stillSince?now-state.stillSince:0,remaining=Math.max(0,0.75-elapsed/1000);
-    ui.stepTimer.textContent=state.stationary?`${remaining.toFixed(1)}s`:'WAITING';
-    ui.stepDetail.textContent=state.stationary?'Position is frozen while stationary—keep holding.':'Stop naturally; final drift verification begins automatically.';
-  } else if(state.stage==='locked'){
-    if(state.stress.complete){ui.stepTimer.textContent=state.stress.overall;ui.stepDetail.textContent=`Stress complete: ${state.stress.results.filter(r=>r.pass).length}/${state.stress.results.length} tests passed. Review results, then save.`;}
-    else {ui.stepTimer.textContent='TEST';ui.stepDetail.textContent='360° lattice is active. Run Stress Test before saving the basis.';}
-  }
-}
-
-function setupMachine(now) {
-  const dt=clamp((now-state.lastSetupAt)/1000,0,0.1);state.lastSetupAt=now;maintainWorldOrientationLock();
-  const motionFresh=now-state.lastMotionAt<500;
-  if(state.stage==='hold_still'){
-    const quality=originStability(now,dt);updateSetupGuidance(now,quality);
-    state.poseReason=`Origin averaging ${Math.round(state.stillScore*100)}%; quality ${Math.round(state.originQuality*100)}%`;
-    const softTimeout=now-state.calibrationStartedAt>3500&&state.originQuality>0.28;
-    if((state.stillScore>=0.72||softTimeout)&&state.originQuaternionSamples.length>=10){
-      captureOrigin();state.calibrationStartedAt=now;
-      setStage('fov_sync','Origin captured at 0,0,0. Slowly look left and right so image motion can solve the visible camera FOV.',34);
-      state.poseReason='Gravity-level origin captured; solving camera projection and camera-to-IMU timing offset';
-    }
-  } else if(state.stage==='fov_sync'){
-    updateSetupGuidance(now);
-    if(state.focalConfidence>0.50&&state.timingConfidence>0.28&&state.fovSamples.length>=9&&state.projectionError<4.2){
-      state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.calibrationStartedAt=now;
-      state.calib={visualPath:0,inertialPath:0,inertialVelocity:{x:0,y:0,z:0},rawVisualPosition:{x:0,y:0,z:0},lastPosition:{x:0,y:0,z:0},motionSeen:false,metricCaptured:false};
-      setStage('xyz_lock','Projection and sensor timing are synchronized. Keep this heading, move the phone exactly 0.50 m (19.7 in) to your RIGHT, then stop.',64);
-      state.poseReason='Projection/timing synchronized; calibrating 0.50 m metric translation on gravity-level world X';
-    } else if(now-state.calibrationStartedAt>15000)state.poseReason='Projection needs slower rotation and visible contrast; continue left/right without translating';
-  } else if(state.stage==='xyz_lock'){
-    updateSetupGuidance(now);
-    const moved=state.calib.metricCaptured;
-    const qualified=moved&&state.visualConfidence>0.26&&state.validTracks>=8&&state.scaleStability>0.42&&state.motionConfidence>0.30;
-    if(qualified&&state.stationary){
-      state.scaleLocked=true;state.calibrationStartedAt=now;state.stillSince=now;
-      setStage('settle_check','Translation has been connected to the same world transform. Hold naturally for the final no-creep check.',88);
-      state.poseReason='Scale frozen; proving stationary position freeze before enabling the full lattice';
-    }
-  } else if(state.stage==='settle_check'){
-    updateSetupGuidance(now);
-    if(state.stationary&&state.stillSince&&now-state.stillSince>750&&state.driftRate<0.018){
-      state.velocity={x:0,y:0,z:0};
-      setStage('locked','Synchronization basis qualified. A world-centered 360° 3D lattice is active; walk/lean to verify XYZ translation before saving.',100,'locked');
-      ui.status.textContent='POSE LOCKED';ui.save.disabled=true;ui.stress.disabled=false;
-      state.poseReason='Gravity-level yaw basis, camera/IMU timing, epipolar translation direction, metric scale, and no-creep gates passed';
-    }
-  } else if(state.stage==='revalidating'){
-    updateSetupGuidance(now);
-    if(state.stationary&&state.stillSince&&now-state.stillSince>550){state.velocity={x:0,y:0,z:0};const resumeStress=state.stress.active?state.stress.index:-1;setStage('locked','Saved projection basis revalidated. Full 3D lattice restored at the current physical origin.',100,'locked');ui.stress.disabled=false;ui.save.disabled=!state.stress.complete;if(resumeStress>=0)enterStressTest(resumeStress);}
-  }
-
-  if(state.stage==='locked'){
-    updateSetupGuidance(now);
-    if((!motionFresh&&now-state.lastOrientationAt>500)||state.validTracks<4||state.visualConfidence<0.055){ui.status.dataset.state='lost';ui.status.textContent='POSE WEAK';state.poseReason=!motionFresh?'Motion stream stale':'Too few reliable visual tracks';}
-    else{ui.status.dataset.state='locked';ui.status.textContent=state.stress.complete?(state.stress.overall==='PASS'?'STRESS PASS':'STRESS REVIEW'):'POSE LOCKED';}
-  }
+function trackingMachine(now){
+  maintainWorldOrientationLock();if(state.stage!=='tracking')return;if(!state.originCaptured)initializeWorldFromCurrentOrientation();saveAutomaticProfile(now);
+  const m=state.map,profileQuality=0.22*state.visualConfidence+0.18*state.motionConfidence+0.18*state.scaleStability+0.42*m.confidence,quality=clamp(profileQuality,0,1);ui.progress.style.width=`${Math.round(quality*100)}%`;
+  if(!state.originCaptured){ui.status.textContent='SENSORS STARTING';ui.status.dataset.state='calibrating';ui.stepTimer.textContent='AUTO';ui.stepDetail.textContent='Waiting only for the first orientation sample; no action is required.';state.poseReason='Waiting for first orientation sample';return;}
+  if(state.validTracks<4&&state.visualConfidence<0.055){ui.status.textContent='POSE WEAK';ui.status.dataset.state='lost';}
+  else if(m.confidence>0.32&&m.poseInliers>=5){ui.status.textContent='WORLD LOCKED';ui.status.dataset.state='locked';}
+  else{ui.status.textContent='AUTO TRACKING';ui.status.dataset.state='calibrating';}
+  ui.stepLabel.textContent='ZERO-SETUP WORLD LOCK';ui.stepTimer.textContent='LIVE';ui.stepDetail.textContent=`${m.landmarks.length} landmarks • ${m.poseInliers} map inliers • scale ${Math.round(state.scaleStability*100)}% • loop closures ${m.loopClosures}`;
+  ui.instruction.textContent='Move normally. Timing, camera geometry, IMU bias, metric scale, mapping, and relocalization refine continuously in the background.';
 }
 
 function cameraPoint(world,camQ,camPos) {
@@ -787,33 +824,20 @@ function drawLattice(camQ,camPos,fx,fy,cx,cy,full) {
 }
 
 function drawGrid() {
-  const dpr=Math.min(devicePixelRatio||1,2),rect=grid.getBoundingClientRect();
-  if(grid.width!==Math.round(rect.width*dpr)||grid.height!==Math.round(rect.height*dpr))resize();
-  const W=rect.width,H=rect.height;gctx.setTransform(dpr,0,0,dpr,0,0);gctx.clearRect(0,0,W,H);
-  const fx=.5*W/Math.tan(state.fovX*DEG/2),fy=.5*H/Math.tan(state.fovY*DEG/2),cx=W/2,cy=H/2,camQ=relativeCameraQ(),camPos=state.position;
-  if(state.stage==='hold_still'||state.stage==='idle')drawOriginReticle(W,H);
-  else if(state.stage==='fov_sync')drawProjectionTunnel(camQ,camPos,fx,fy,cx,cy);
-  else if(state.stage==='xyz_lock')drawLattice(camQ,camPos,fx,fy,cx,cy,false);
-  else if(state.stage==='settle_check'||state.stage==='locked'||state.stage==='revalidating')drawLattice(camQ,camPos,fx,fy,cx,cy,true);
-  gctx.fillStyle='rgba(255,255,255,.78)';gctx.font='11px system-ui';gctx.fillText(`HFOV ${state.fovX.toFixed(1)}° • ${state.gridMode} • tracks ${state.validTracks}`,12,H-14);
+  const dpr=Math.min(devicePixelRatio||1,2),rect=grid.getBoundingClientRect();if(grid.width!==Math.round(rect.width*dpr)||grid.height!==Math.round(rect.height*dpr))resize();
+  const W=rect.width,H=rect.height;gctx.setTransform(dpr,0,0,dpr,0,0);gctx.clearRect(0,0,W,H);const fx=.5*W/Math.tan(state.fovX*DEG/2),fy=.5*H/Math.tan(state.fovY*DEG/2),cx=W/2,cy=H/2,camQ=relativeCameraQ(),camPos=state.position;
+  if(state.stage==='tracking'&&state.originCaptured)drawLattice(camQ,camPos,fx,fy,cx,cy,true);else drawOriginReticle(W,H);
+  gctx.fillStyle='rgba(255,255,255,.78)';gctx.font='11px system-ui';gctx.fillText(`HFOV ${state.fovX.toFixed(1)}° • landmarks ${state.map.landmarks.length} • map inliers ${state.map.poseInliers}`,12,H-14);
 }
 
 function updateUI() {
-  ui.x.textContent=state.position.x.toFixed(3);ui.y.textContent=state.position.y.toFixed(3);ui.z.textContent=state.position.z.toFixed(3);
-  ui.gridMode.textContent=state.gridMode.toUpperCase();
-  ui.dState.textContent=state.stage;ui.dFov.textContent=`${state.fovX.toFixed(1)}° × ${state.fovY.toFixed(1)}°`;
-  ui.dVisual.textContent=`${Math.round(state.visualConfidence*100)}%`;ui.dMotion.textContent=`${Math.round(state.motionConfidence*100)}%`;
-  ui.dStill.textContent=state.stationary?`locked ${Math.round(state.stationaryScore*100)}%`:`${Math.round(state.stationaryScore*100)}%`;ui.dFps.textContent=state.processedFps.toFixed(1);
-  ui.dScale.textContent=`${state.scale.toFixed(3)} (${Math.round(state.scaleStability*100)}%)${state.scaleLocked?' locked':''}`;
-  ui.dQuality.textContent=state.stage==='locked'?(state.visualConfidence>.30?'qualified':'limited'):'unqualified';
-  ui.dTracks.textContent=String(state.validTracks);ui.dDrift.textContent=`${state.driftRate.toFixed(4)} u/s`;
-  ui.dImuHz.textContent=state.imuHz.toFixed(1);ui.dVideoHz.textContent=state.videoHz.toFixed(1);ui.dReason.textContent=state.poseReason;
-  ui.dProjectionError.textContent=Number.isFinite(state.projectionError)?`${state.projectionError.toFixed(2)} px`:'—';
-  ui.dOriginQuality.textContent=`${Math.round(state.originQuality*100)}%`;ui.dGridMode.textContent=state.gridMode;
-  if(ui.dVisualStep)ui.dVisualStep.textContent=state.visualStepMagnitude.toFixed(5);if(ui.dMoveGate)ui.dMoveGate.textContent=state.movementGate;
-  if(ui.dTiming)ui.dTiming.textContent=`${state.videoImuLagMs.toFixed(0)} ms (${Math.round(state.timingConfidence*100)}%)`;
-  if(ui.dWorldBasis)ui.dWorldBasis.textContent='gravity-level + start yaw';
-  if(ui.dDirection)ui.dDirection.textContent=`${Math.round(state.translationDirectionConfidence*100)}%`;
+  ui.x.textContent=state.position.x.toFixed(3);ui.y.textContent=state.position.y.toFixed(3);ui.z.textContent=state.position.z.toFixed(3);ui.gridMode.textContent=state.gridMode.toUpperCase();
+  ui.dState.textContent=state.stage;ui.dFov.textContent=`${state.fovX.toFixed(1)}° × ${state.fovY.toFixed(1)}°`;ui.dVisual.textContent=`${Math.round(state.visualConfidence*100)}%`;ui.dMotion.textContent=`${Math.round(state.motionConfidence*100)}%`;
+  ui.dStill.textContent=state.stationary?`yes ${Math.round(state.stationaryScore*100)}%`:`no ${Math.round(state.stationaryScore*100)}%`;ui.dFps.textContent=state.processedFps.toFixed(1);ui.dScale.textContent=`${state.scale.toFixed(3)} m/u (${Math.round(state.scaleStability*100)}%)${state.scaleLocked?' stable':''}`;
+  ui.dQuality.textContent=state.map.confidence>.32&&state.map.poseInliers>=5?'map locked':state.visualConfidence>.12?'visual-inertial':'weak';ui.dTracks.textContent=String(state.validTracks);ui.dDrift.textContent=`${state.driftRate.toFixed(4)} m/s`;
+  ui.dImuHz.textContent=state.imuHz.toFixed(1);ui.dVideoHz.textContent=state.videoHz.toFixed(1);ui.dReason.textContent=state.poseReason;ui.dProjectionError.textContent=Number.isFinite(state.map.reprojectionError)?`${state.map.reprojectionError.toFixed(2)} px map`:Number.isFinite(state.projectionError)?`${state.projectionError.toFixed(2)} px rotation`:'—';
+  ui.dOriginQuality.textContent=state.originCaptured?'automatic':'waiting';ui.dGridMode.textContent=state.gridMode;if(ui.dVisualStep)ui.dVisualStep.textContent=state.visualStepMagnitude.toFixed(5);if(ui.dMoveGate)ui.dMoveGate.textContent=state.movementGate;
+  if(ui.dTiming)ui.dTiming.textContent=`${state.videoImuLagMs.toFixed(0)} ms (${Math.round(state.timingConfidence*100)}%)`;if(ui.dWorldBasis)ui.dWorldBasis.textContent=`gravity + start yaw • ${state.map.landmarks.length} landmarks • ${state.map.loopClosures} loop closures`;if(ui.dDirection)ui.dDirection.textContent=`${Math.round(state.translationDirectionConfidence*100)}%`;
 }
 
 const STRESS_TESTS = [
@@ -831,11 +855,11 @@ function wrapPi(a){while(a>Math.PI)a-=Math.PI*2;while(a<-Math.PI)a+=Math.PI*2;re
 function cameraYaw(camQ){const f=qRotate(camQ,{x:0,y:0,z:-1});return Math.atan2(f.x,-f.z);}
 function resetStress(){
   state.stress={active:false,complete:false,index:-1,startedAt:0,stageStartedAt:0,testStartPos:null,testStartQ:null,lastPos:null,lastYaw:0,yawTravel:0,pathLength:0,maxDisplacement:0,maxAxis:0,maxOffAxis:0,maxDriftRate:0,stableSince:0,movementSeen:false,results:[],overall:'not run',manual:false};
-  if(ui.stress){ui.stress.textContent='Stress Test';ui.stress.disabled=state.stage!=='locked';}
+  if(ui.stress){ui.stress.textContent='Stress Test';ui.stress.disabled=state.stage!=='tracking';}
 }
 function startStressTest(){
-  if(state.stage!=='locked')return;
-  resetStress();state.stress.active=true;state.stress.startedAt=performance.now();state.stress.index=0;ui.save.disabled=true;ui.stress.textContent='Next Test';enterStressTest(0);
+  if(state.stage!=='tracking')return;
+  resetStress();state.stress.active=true;state.stress.startedAt=performance.now();state.stress.index=0;if(ui.save)ui.save.disabled=true;ui.stress.textContent='Next Test';enterStressTest(0);
 }
 function enterStressTest(index){
   const s=state.stress,t=STRESS_TESTS[index],now=performance.now();
@@ -851,7 +875,7 @@ function finishStressResult(pass,metrics,note,manual=false){
 }
 function finishStressTest(){
   const s=state.stress;s.active=false;s.complete=true;s.overall=s.results.every(r=>r.pass&&!r.manual)?'PASS':(s.results.some(r=>r.pass)?'MIXED':'FAIL');
-  ui.stress.textContent='View Stress';ui.save.disabled=false;ui.status.textContent=s.overall==='PASS'?'STRESS PASS':'STRESS REVIEW';ui.status.dataset.state=s.overall==='PASS'?'locked':'calibrating';ui.stepLabel.textContent='STRESS COMPLETE';ui.stepTimer.textContent=s.overall;ui.stepDetail.textContent=`${s.results.filter(r=>r.pass).length}/${s.results.length} tests passed. Review the report before saving.`;ui.instruction.textContent='Stress qualification complete. Inspect closure and axis-purity measurements, then save the basis if the behavior is acceptable.';state.poseReason=`Stress ${s.overall}: ${s.results.filter(r=>r.pass).length}/${s.results.length} passed`;showStressResults();
+  ui.stress.textContent='View Stress';if(ui.save)ui.save.disabled=false;ui.status.textContent=s.overall==='PASS'?'STRESS PASS':'STRESS REVIEW';ui.status.dataset.state=s.overall==='PASS'?'locked':'calibrating';ui.stepLabel.textContent='STRESS COMPLETE';ui.stepTimer.textContent=s.overall;ui.stepDetail.textContent=`${s.results.filter(r=>r.pass).length}/${s.results.length} tests passed.`;ui.instruction.textContent='Stress qualification complete. The tracker continues running and refining its map automatically.';state.poseReason=`Stress ${s.overall}: ${s.results.filter(r=>r.pass).length}/${s.results.length} passed`;showStressResults();
 }
 function manualAdvanceStress(){
   if(!state.stress.active)return;const s=state.stress,t=STRESS_TESTS[s.index];const {d,dist}=stressCommonSample();
@@ -860,7 +884,7 @@ function manualAdvanceStress(){
   finishStressResult(false,metrics,'Advanced manually before automatic completion.',true);
 }
 function updateStress(now){
-  const s=state.stress;if(!s.active||state.stage!=='locked')return;const t=STRESS_TESTS[s.index],elapsed=(now-s.stageStartedAt)/1000,{d,dist}=stressCommonSample();
+  const s=state.stress;if(!s.active||state.stage!=='tracking')return;const t=STRESS_TESTS[s.index],elapsed=(now-s.stageStartedAt)/1000,{d,dist}=stressCommonSample();
   if(t.kind==='stationary'){
     const pct=clamp(elapsed/4,0,1);ui.stepTimer.textContent=`${Math.round(pct*100)}%`;ui.stepDetail.textContent=`Hold still • max displacement ${s.maxDisplacement.toFixed(4)} u • drift ${s.maxDriftRate.toFixed(4)} u/s`;
     if(elapsed>=4){const pass=s.maxDisplacement<0.035&&s.maxDriftRate<0.025;finishStressResult(pass,{duration:elapsed,maxDisplacement:s.maxDisplacement,maxDriftRate:s.maxDriftRate,finalDisplacement:dist},pass?'No significant stationary creep detected.':'Stationary pose moved beyond the qualification threshold.');}
@@ -889,39 +913,21 @@ function renderStressResults(){
   for(const item of r.results){const card=document.createElement('div');card.className='stressResult';card.dataset.pass=String(item.pass);const metricText=Object.entries(item.metrics||{}).map(([k,v])=>`${k}: ${typeof v==='number'&&Number.isFinite(v)?Number(v.toFixed(4)):v}`).join(' • ');card.innerHTML=`<header><b>${item.name}</b><strong>${item.pass?'PASS':'REVIEW'}</strong></header><small>${item.note||''}</small><small>${metricText}</small>`;ui.stressResults.appendChild(card);}
 }
 function showStressResults(){renderStressResults();if(!ui.stressDialog.open)ui.stressDialog.showModal();}
-function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v2-5.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function exportStressReport(){const blob=new Blob([JSON.stringify(stressReportObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-xyz-stress-report-v3-0.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
-function renderLoop(now){setupMachine(now);updateStress(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
+function renderLoop(now){trackingMachine(now);updateStress(now);drawGrid();updateUI();requestAnimationFrame(renderLoop);}
 function resize(){const r=grid.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);grid.width=Math.max(1,Math.round(r.width*d));grid.height=Math.max(1,Math.round(r.height*d));if(state.fovX)state.fovY=2*Math.atan(Math.tan(state.fovX*DEG/2)*(r.height/Math.max(1,r.width)))/DEG;updateVisionCanvasSize();}
 
-function basisObject() {
-  return {
-    version:2.5,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,
-    axisConvention:{x:'right from starting heading',y:'gravity up',z:'backward from starting heading; camera looks toward -Z'},cameraSettings:state.trackSettings,
-    qualification:{visualConfidence:state.visualConfidence,motionConfidence:state.motionConfidence,scaleStability:state.scaleStability,stationaryDrift:state.driftRate,projectionResidualPx:state.projectionError,originQuality:state.originQuality,videoImuLagMs:state.videoImuLagMs,timingConfidence:state.timingConfidence,translationDirectionConfidence:state.translationDirectionConfidence,imuHz:state.imuHz,videoHz:state.videoHz,stress:stressReportObject()},
-    note:'World Y is gravity-level, horizontal yaw is zeroed from the starting heading, and scale is calibrated from the 0.50 m translation step. Reload restores projection/timing/scale but, without persistent visual anchors, the current physical location becomes the reloaded origin.'
-  };
-}
-function saveBasis(){localStorage.setItem(STORAGE_KEY,JSON.stringify(basisObject()));state.basisSaved=true;ui.load.disabled=false;ui.instruction.textContent='Basis saved locally after the 3D walk-around test. Reload restores projection, timing, and metric scale, then establishes the current physical location as origin.';}
-function loadBasis(){
-  const raw=localStorage.getItem(STORAGE_KEY)||LEGACY_STORAGE_KEYS.map(k=>localStorage.getItem(k)).find(Boolean);if(!raw)return;
-  try{
-    resetStress(); ui.stress.disabled=true;
-    const b=JSON.parse(raw);if(Number(b.version)<2.5)throw new Error('This basis predates the gravity-level/metric tracking repair. Run the synchronization setup once to create a v2.5 basis.');
-    state.fovX=clamp(b.fovX||62,34,100);state.fovY=clamp(b.fovY||48,20,100);state.scale=clamp(b.scale||1,.1,20);state.scaleLocked=true;
-    state.scaleStability=b.qualification?.scaleStability||.5;state.projectionError=b.qualification?.projectionResidualPx??Infinity;state.videoImuLagMs=clamp(b.qualification?.videoImuLagMs??70,0,220);state.timingConfidence=b.qualification?.timingConfidence||0;
-    state.baseQ=qAxis(0,1,0,cameraHeadingAngle(state.orientationQ));state.orientationCorrection=q();state.orientationHoldQ=null;state.originCaptured=true;state.position={x:0,y:0,z:0};state.velocity={x:0,y:0,z:0};state.stillScore=0;state.stillSince=0;
-    setStage('revalidating','Saved projection and scale loaded. Hold normally while the current camera pose becomes the new origin.',94);
-    ui.save.disabled=false;state.poseReason='Revalidating saved basis against current live camera and motion streams';
-  }catch(err){ui.instruction.textContent=`Saved basis could not be loaded: ${err.message}`;}
-}
-function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-basis-v2-5.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+function basisObject(){return{version:3.0,savedAt:new Date().toISOString(),fovX:state.fovX,fovY:state.fovY,scale:state.scale,axisConvention:{x:'right from startup heading',y:'gravity up',z:'backward from startup heading; camera looks toward -Z'},cameraSettings:state.trackSettings,automatic:{focalConfidence:state.focalConfidence,timingConfidence:state.timingConfidence,videoImuLagMs:state.videoImuLagMs,scaleStability:state.scaleStability,scaleUpdates:state.metric.automaticUpdates,mapLandmarks:state.map.landmarks.length,mapInliers:state.map.poseInliers,mapConfidence:state.map.confidence,relocalizations:state.map.relocalizations,loopClosures:state.map.loopClosures,mapReprojectionErrorPx:state.map.reprojectionError},stress:stressReportObject(),note:'Zero-setup tracker: startup origin is automatic; timing/FOV/bias/metric scale refine during natural motion; persistent landmarks and relocalization correct accumulated visual drift.'};}
+function saveBasis(){saveAutomaticProfile(1e12);state.basisSaved=true;ui.instruction.textContent='Automatic device profile saved. No calibration sequence is required.';}
+function loadBasis(){loadAutomaticProfile();ui.instruction.textContent='Automatic device profile refreshed. Tracking and the current map continue without a setup sequence.';}
+function exportBasis(){const blob=new Blob([JSON.stringify(basisObject(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='cruxtain-definitive-xyz-auto-v3-0.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
 
 ui.start.addEventListener('click',requestPermissions);
 ui.stress.addEventListener('click',()=>{if(state.stress.active)manualAdvanceStress();else if(state.stress.complete)showStressResults();else startStressTest();});
-ui.save.addEventListener('click',saveBasis);ui.load.addEventListener('click',loadBasis);ui.reset.addEventListener('click',beginSetup);
+if(ui.save)ui.save.addEventListener('click',saveBasis);if(ui.load)ui.load.addEventListener('click',loadBasis);ui.reset.addEventListener('click',beginTracking);
 ui.diag.addEventListener('click',()=>ui.dialog.showModal());ui.closeDiag.addEventListener('click',()=>ui.dialog.close());ui.export.addEventListener('click',exportBasis);
 ui.closeStress.addEventListener('click',()=>ui.stressDialog.close());ui.exportStress.addEventListener('click',exportStressReport);
 addEventListener('resize',resize);
-addEventListener('orientationchange',()=>setTimeout(()=>{resize();if(state.stage==='locked')setStage('revalidating','Screen orientation changed. Hold normally while axes and projection revalidate.',94);},250));
+addEventListener('orientationchange',()=>setTimeout(()=>{resize();state.previousFrame=null;state.previousFrameTime=0;state.poseReason='Screen orientation changed; live map relocalization continues automatically';},250));
 if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
